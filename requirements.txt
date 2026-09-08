@@ -1,0 +1,2 @@
+protobuf>=5
+httpx[http2]>=0.27
