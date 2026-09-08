@@ -8,8 +8,55 @@ def resolve(f):
     pkg=f.package or ''
     for svc in f.service:
         for m in svc.method:
-            out.append((svc.name, m.name or '', f'/{pkg}.{svc.name}/{m.name}', m.server_streaming, m.input_type.split('.')[-1], m.output_type.split('.')[-1]))
+            path=rest_path(m) or f'/{pkg}.{svc.name}/{m.name}'
+            out.append((svc.name, m.name or '', path, m.server_streaming, m.input_type.split('.')[-1], m.output_type.split('.')[-1]))
     return out
+
+
+
+def rest_path(m):
+    opts=m.options
+    if not opts: return None
+    try:
+        raw=opts.SerializeToString(); pos=0
+        while pos < len(raw):
+            tag,pos=readvar(raw,pos)
+            field=tag>>3; wt=tag&7
+            if wt==2:
+                ln,pos=readvar(raw,pos)
+                val=raw[pos:pos+ln]; pos+=ln
+                if field==72295728:
+                    p=parse_rule(val)
+                    if p: return p
+            elif wt==0:
+                _,pos=readvar(raw,pos)
+            elif wt==5: pos+=4
+            elif wt==1: pos+=8
+    except Exception:
+        return None
+    return None
+
+def readvar(b,i):
+    v=0;s=0
+    while True:
+        x=b[i] if i<len(b) else 0; i+=1; v|=(x&0x7f)<<s;s+=7
+        if not x&0x80: break
+    return v,i
+
+def parse_rule(d):
+    i=0
+    while i<len(d):
+        tag,i=readvar(d,i)
+        field=tag>>3; wt=tag&7
+        if wt==2:
+            ln,i=readvar(d,i)
+            val=d[i:i+ln].decode(); i+=ln
+            if field in (2,4,3,6): return val
+        elif wt==0:
+            _,i=readvar(d,i)
+        elif wt==5: i+=4
+        elif wt==1: i+=8
+    return None
 
 def main():
     data=sys.stdin.buffer.read()

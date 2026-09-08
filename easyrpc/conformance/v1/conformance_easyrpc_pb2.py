@@ -7,20 +7,20 @@ class ConformanceServiceClient:
     def __init__(self, transport: Transport): self._t = transport
 
     async def health(self, req: m.HealthRequest) -> m.HealthResponse:
-        res = await self._t.send(Request(url="/easyrpc.conformance.v1.ConformanceService/Health", body=req.SerializeToString()))
+        res = await self._t.send(Request(url="/v1/health", body=req.SerializeToString()))
         if res.error: raise res.error
         return m.HealthResponse.FromString(res.body)
 
     async def echo(self, req: m.EchoRequest) -> m.EchoResponse:
-        res = await self._t.send(Request(url="/easyrpc.conformance.v1.ConformanceService/Echo", body=req.SerializeToString()))
+        res = await self._t.send(Request(url="/v1/echo", body=req.SerializeToString()))
         if res.error: raise res.error
         return m.EchoResponse.FromString(res.body)
 
     async def count(self, req: m.CountRequest) -> "AsyncIterator[m.CountResponse]":
-        st = await self._t.open_stream(Request(url="/easyrpc.conformance.v1.ConformanceService/Count", body=req.SerializeToString()))
+        st = await self._t.open_stream(Request(url="/v1/count", body=req.SerializeToString()))
         async for chunk in st: yield m.CountResponse.FromString(chunk)
 
     async def fail(self, req: m.FailRequest) -> m.FailResponse:
-        res = await self._t.send(Request(url="/easyrpc.conformance.v1.ConformanceService/Fail", body=req.SerializeToString()))
+        res = await self._t.send(Request(url="/v1/fail", body=req.SerializeToString()))
         if res.error: raise res.error
         return m.FailResponse.FromString(res.body)
