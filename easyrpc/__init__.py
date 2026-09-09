@@ -41,11 +41,14 @@ def result_aclosetask(client):
 
 
 def http_status(code: int) -> int:
-    return {3: 400, 5: 404, 7: 403, 8: 429, 16: 401, 14: 503}.get(code, 500)
+    return {1: 499, 3: 400, 4: 504, 5: 404, 6: 409, 7: 403,
+            8: 429, 9: 400, 10: 409, 11: 400, 12: 501,
+            14: 503, 16: 401}.get(code, 500)
 
 
 def connect_from_status(status: int) -> int:
-    return {400: 3, 404: 5, 403: 7, 401: 16, 429: 8, 503: 14}.get(status, 13)
+    return {400: 3, 404: 5, 403: 7, 401: 16, 429: 8,
+            503: 14, 409: 10, 504: 4, 501: 12, 499: 1}.get(status, 13)
 
 
 FLAG_END_STREAM = 0x02
