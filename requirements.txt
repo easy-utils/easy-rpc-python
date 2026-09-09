@@ -1,2 +1,4 @@
 protobuf>=5
 httpx[http2]>=0.27
+# optional HTTP/3 (realm=auto):
+aioquic>=1.3
