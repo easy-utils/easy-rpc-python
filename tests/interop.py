@@ -5,7 +5,7 @@ from easyrpc.conformance.v1 import conformance_pb2 as pb
 from easyrpc.conformance.v1.conformance_easyrpc_pb2 import ConformanceServiceClient
 
 async def main():
-    t = HttpxTransport(base="http://127.0.0.1:18888")
+    t = HttpxTransport(base=os.environ.get("EASY_RPC_BASE", "http://127.0.0.1:18888"))
     c = ConformanceServiceClient(t)
     out = await c.echo(pb.EchoRequest(input="hi"))
     assert out.output == "echo:hi", out.output
