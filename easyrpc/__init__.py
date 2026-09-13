@@ -125,7 +125,8 @@ class HttpxTransport(Transport):
 
     def __init__(self, base: str = "", client: Optional[httpx.AsyncClient] = None):
         self.base = base.rstrip("/")
-        self.client = client or httpx.AsyncClient(http2=True)
+        self.client = client or httpx.AsyncClient(
+            http2=True, timeout=httpx.Timeout(5.0, read=None))
 
     def _url(self, u: str) -> str:
         return self.base + u if u.startswith("/") else u
@@ -152,10 +153,7 @@ class HttpxTransport(Transport):
             req.method, self._url(req.url), headers=headers, content=req.body,
         )
         # No read timeout: a server-stream stays open between frames.
-        resp = await self.client.send(
-            request, stream=True,
-            timeout=httpx.Timeout(connect=5.0, read=None, write=5.0, pool=5.0),
-        )
+        resp = await self.client.send(request, stream=True)
         if resp.status_code >= 300:
             body = await resp.aread()
             raise rpc_error_from(resp.status_code, resp.headers, body)
