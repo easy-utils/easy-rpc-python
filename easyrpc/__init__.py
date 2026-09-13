@@ -46,6 +46,23 @@ def http_status(code: int) -> int:
             14: 503, 16: 401}.get(code, 500)
 
 
+def rpc_error_from(status: int, headers, body) -> "RPCError":
+    """Reconstruct an RPCError from the server's `connect-code`/`connect-error`
+    headers (the HTTP status alone is lossy)."""
+    code = None
+    try:
+        code = headers.get("connect-code")
+    except Exception:
+        code = None
+    if code is not None:
+        try:
+            return RPCError(int(code), str(headers.get("connect-error", "")))
+        except (TypeError, ValueError):
+            pass
+    text = body.decode() if isinstance(body, (bytes, bytearray)) else str(body)
+    return RPCError(connect_from_status(status), text)
+
+
 def connect_from_status(status: int) -> int:
     return {400: 3, 404: 5, 403: 7, 401: 16, 429: 8,
             503: 14, 409: 10, 504: 4, 501: 12, 499: 1}.get(status, 13)
@@ -123,16 +140,25 @@ class HttpxTransport(Transport):
             status=r.status_code,
             headers=dict(r.headers),
             body=r.content,
-            error=RPCError(connect_from_status(r.status_code), r.text) if r.status_code >= 300 else None,
+            error=rpc_error_from(r.status_code, r.headers, r.content) if r.status_code >= 300 else None,
         )
 
     async def open_stream(self, req: Request) -> "Stream":
         headers = {k: v[0] for k, v in req.headers.items()}
-        resp = await self.client.request(
+        # Streaming responses must NOT buffer and must not time out mid-stream:
+        # build the request and send it with stream=True so we read frames as
+        # they arrive (server-stream RPCs stay open for the session's lifetime).
+        request = self.client.build_request(
             req.method, self._url(req.url), headers=headers, content=req.body,
         )
+        # No read timeout: a server-stream stays open between frames.
+        resp = await self.client.send(
+            request, stream=True,
+            timeout=httpx.Timeout(connect=5.0, read=None, write=5.0, pool=5.0),
+        )
         if resp.status_code >= 300:
-            raise RPCError(connect_from_status(resp.status_code), resp.text)
+            body = await resp.aread()
+            raise rpc_error_from(resp.status_code, resp.headers, body)
 
         it = resp.aiter_bytes()
 
