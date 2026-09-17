@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Awaitable, Callable, Dict, Optional, Protocol
 
 from . import RPCError, Request, frame, read_frame, http_status, MethodSpec  # noqa: F401
-from . import FLAG_END_STREAM  # noqa: F401
+from . import FLAG_END_STREAM, encode_end_stream, decode_end_stream  # noqa: F401
 
 ContentKind = str  # 'proto' | 'json'
 
@@ -37,12 +37,6 @@ class ServerRegistry:
 
 def detect_kind(ct: str) -> ContentKind:
     return "json" if ct.startswith("application/json") else "proto"
-
-
-def encode_end_stream(code: int, message: str) -> bytes:
-    """Error payload for a stream END frame (`<code byte>\\x00<message>`),
-    matching the Go/Rust/TS encoders."""
-    return bytes([code & 0xFF, 0]) + message.encode("utf-8")
 
 
 def stream_content(kind: ContentKind) -> str:

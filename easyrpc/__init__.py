@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import AsyncIterator, Callable, Dict, List, Optional
 
 import asyncio
+import json
 import httpx
 
 
@@ -69,6 +70,46 @@ def connect_from_status(status: int) -> int:
 
 
 FLAG_END_STREAM = 0x02
+
+# Connect code -> stable lowercase wire name.
+CODE_NAMES = {
+    0: "ok", 1: "canceled", 2: "unknown", 3: "invalid_argument",
+    4: "deadline_exceeded", 5: "not_found", 6: "already_exists",
+    7: "permission_denied", 8: "resource_exhausted", 9: "failed_precondition",
+    10: "aborted", 11: "out_of_range", 12: "unimplemented", 13: "internal",
+    14: "unavailable", 15: "data_loss", 16: "unauthenticated",
+}
+CODE_BY_NAME = {v: k for k, v in CODE_NAMES.items()}
+
+
+def code_to_string(code: int) -> str:
+    return CODE_NAMES.get(code, "unknown")
+
+
+def code_from_string(name: str) -> int:
+    return CODE_BY_NAME.get(name, 2)
+
+
+def encode_end_stream(code: int, message: str) -> bytes:
+    """Connect end-stream payload: `{"error":{"code":"<name>","message":"..."}}`;
+    a clean end is empty."""
+    if code == 0:
+        return b""
+    return json.dumps({"error": {"code": code_to_string(code), "message": message}}).encode("utf-8")
+
+
+def decode_end_stream(payload: bytes) -> tuple:
+    """Decode a Connect end-stream payload into (code, message); (0, '') clean."""
+    if not payload:
+        return (0, "")
+    try:
+        v = json.loads(payload.decode("utf-8"))
+        e = v.get("error") if isinstance(v, dict) else None
+        if not isinstance(e, dict):
+            return (0, "")
+        return (code_from_string(e.get("code", "unknown")), str(e.get("message", "")))
+    except Exception:
+        return (0, "")
 
 
 def frame(payload: bytes, end: bool = False) -> bytes:
@@ -178,6 +219,9 @@ class HttpxTransport(Transport):
                         payload, end, consumed = step
                         self._acc = self._acc[consumed:]
                         if end:
+                            code, message = decode_end_stream(payload)
+                            if code != 0:
+                                raise RPCError(code, message)
                             return
                         yield payload
 
