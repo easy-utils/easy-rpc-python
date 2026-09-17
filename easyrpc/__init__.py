@@ -60,6 +60,9 @@ def rpc_error_from(status: int, headers, body) -> "RPCError":
             return RPCError(int(code), str(headers.get("connect-error", "")))
         except (TypeError, ValueError):
             pass
+    c2, m2 = decode_error_json(body if isinstance(body, (bytes, bytearray)) else b"")
+    if c2 != 0:
+        return RPCError(c2, m2)
     text = body.decode() if isinstance(body, (bytes, bytearray)) else str(body)
     return RPCError(connect_from_status(status), text)
 
@@ -110,6 +113,24 @@ def decode_end_stream(payload: bytes) -> tuple:
         return (code_from_string(e.get("code", "unknown")), str(e.get("message", "")))
     except Exception:
         return (0, "")
+
+
+def encode_error_json(code: int, message: str) -> bytes:
+    """Connect unary error body `{code,message}`."""
+    return json.dumps({"code": code_to_string(code), "message": message}).encode("utf-8")
+
+
+def decode_error_json(body: bytes) -> tuple:
+    """Parse a Connect unary error body; (0, '') when not an error body."""
+    if not body:
+        return (0, "")
+    try:
+        v = json.loads(body.decode("utf-8"))
+        if isinstance(v, dict) and isinstance(v.get("code"), str):
+            return (code_from_string(v["code"]), str(v.get("message", "")))
+    except Exception:
+        pass
+    return (0, "")
 
 
 def frame(payload: bytes, end: bool = False) -> bytes:

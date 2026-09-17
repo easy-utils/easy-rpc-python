@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Awaitable, Callable, Dict, Optional, Protocol
 
 from . import RPCError, Request, frame, read_frame, http_status, MethodSpec  # noqa: F401
-from . import FLAG_END_STREAM, encode_end_stream, decode_end_stream  # noqa: F401
+from . import FLAG_END_STREAM, encode_end_stream, decode_end_stream, encode_error_json  # noqa: F401
 
 ContentKind = str  # 'proto' | 'json'
 
@@ -107,8 +107,8 @@ async def dispatch(
 
 async def _write_error(w: ResponseWriter, err: RPCError) -> None:
     w.status(http_status(err.code))
-    w.header("content-type", "text/plain")
-    await w.write_frame(err.message.encode("utf-8"))
+    w.header("content-type", "application/json")
+    await w.write_frame(encode_error_json(err.code, err.message))
 
 
 # ---- aiohttp adapter ----
