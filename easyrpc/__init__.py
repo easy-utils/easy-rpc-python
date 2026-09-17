@@ -170,6 +170,70 @@ class Transport:
     async def open_stream(self, req: Request) -> "Stream":
         raise NotImplementedError
 
+class Interceptor:
+    """Wrap a Transport call: mutate the request (auth/metadata), impose a
+    deadline, observe, or short-circuit. `next_` performs the call."""
+
+    async def unary(self, req: "Request", next_) -> "Response":
+        return await next_(req)
+
+    async def stream(self, req: "Request", next_) -> "Stream":
+        return await next_(req)
+
+
+class _InterceptedTransport(Transport):
+    def __init__(self, ics, inner):
+        self._ics, self._inner = ics, inner
+
+    def _wrap(self, req, i, call):
+        if i >= len(self._ics):
+            return call(req)
+        return getattr(self._ics[i], "unary" if call.__name__ == "send" else "stream")(
+            req, lambda r: self._wrap(r, i + 1, call)
+        )
+
+    async def send(self, req: "Request") -> "Response":
+        async def call(r):
+            return await self._inner.send(r)
+        return await self._wrap(req, 0, call)
+
+    async def open_stream(self, req: "Request") -> "Stream":
+        async def call(r):
+            return await self._inner.open_stream(r)
+        return await self._wrap(req, 0, call)
+
+
+def interceptors(inner: Transport, *ics: Interceptor) -> Transport:
+    return _InterceptedTransport(list(ics), inner)
+
+
+class MetadataInterceptor(Interceptor):
+    def __init__(self, md):
+        self._md = md
+
+    def _aug(self, req):
+        for k, v in self._md.items():
+            req.headers.setdefault(k, list(v))
+        return req
+
+    async def unary(self, req, next_):
+        return await next_(self._aug(req))
+
+    async def stream(self, req, next_):
+        return await next_(self._aug(req))
+
+
+class TimeoutInterceptor(Interceptor):
+    def __init__(self, timeout_ms: int):
+        self._ms = timeout_ms
+
+    async def unary(self, req, next_):
+        return await next_(with_timeout(req, self._ms))
+
+    async def stream(self, req, next_):
+        return await next_(with_timeout(req, self._ms))
+
+
 
 class Stream:
     async def __aiter__(self) -> AsyncIterator[bytes]:
