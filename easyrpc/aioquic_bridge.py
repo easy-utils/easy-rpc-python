@@ -70,7 +70,9 @@ class _H3ClientProtocol(QuicConnectionProtocol):
                         fut.set_result(evs)
 
     def transmit(self):
-        self._quic.transmit()
+        # aioquic >= 1.2 removed QuicConnection.transmit(); flush pending
+        # datagrams through the asyncio protocol instead (datagrams_to_send).
+        super().transmit()
 
 
 class AioquicTransport:
@@ -111,26 +113,41 @@ class AioquicTransport:
         if not self.verify:
             config.verify_mode = False
 
-        async with connect(host, port, configuration=config, create_protocol=_H3ClientProtocol) as proto:
-            headers = {k: v[0] for k, v in (req.headers or {}).items()}
-            stream_id = proto._quic.get_next_available_stream_id()
-            hdrs = [(b":method", req.method.encode()), (b":scheme", b"https"),
-                    (b":authority", parsed.netloc.encode()), (b":path",
-                    (parsed.path + ("?" + parsed.query if parsed.query else "")).encode())]
-            for k, v in headers.items():
-                hdrs.append((k.lower().encode(), v.encode()))
-            proto._http.send_headers(stream_id, hdrs, end_stream=False)
-            if req.body:
-                proto._http.send_data(stream_id, req.body, end_stream=False)
-            proto.transmit()
+        # The connection must OUTLIVE the returned stream: enter the context
+        # manually and close it when the stream is exhausted (returning a
+        # generator from inside `async with` would close the QUIC connection
+        # before any frame arrives).
+        connector = connect(host, port, configuration=config,
+                            create_protocol=_H3ClientProtocol)
+        proto = await connector.__aenter__()
+        headers = {k: v[0] for k, v in (req.headers or {}).items()}
+        stream_id = proto._quic.get_next_available_stream_id()
+        hdrs = [(b":method", req.method.encode()), (b":scheme", b"https"),
+                (b":authority", parsed.netloc.encode()),
+                (b":path", (parsed.path + ("?" + parsed.query if parsed.query else "")).encode())]
+        for k, v in headers.items():
+            hdrs.append((k.lower().encode(), v.encode()))
+        proto._http.send_headers(stream_id, hdrs, end_stream=False)
+        if req.body:
+            proto._http.send_data(stream_id, req.body, end_stream=True)
+        else:
+            proto._http.send_data(stream_id, b"", end_stream=True)
+        proto.transmit()
 
-            async def _iter():
-                buffer = b""
+        async def _iter():
+            buffer = b""
+            try:
                 while True:
                     if stream_id in proto._stream_events and proto._stream_events[stream_id]:
                         evs = proto._stream_events[stream_id]
+                        proto._stream_events[stream_id] = []
+                        done = False
                         for ev in evs:
-                            if ev["type"] == "data":
+                            if ev["type"] == "headers":
+                                status = int(ev["headers"].get(b":status", b"0"))
+                                if status >= 300:
+                                    raise RPCError(connect_from_status(status), "http error")
+                            elif ev["type"] == "data":
                                 buffer += ev["data"]
                                 while True:
                                     step = read_frame(buffer)
@@ -139,15 +156,19 @@ class AioquicTransport:
                                     payload, end, consumed = step
                                     buffer = buffer[consumed:]
                                     if end:
-                                        return
+                                        done = True
+                                        break
                                     yield payload
-                        proto._stream_events[stream_id] = []
+                        if done:
+                            return
                     else:
-                        if stream_id in proto._stream_futures:
-                            evs = await proto._stream_futures.pop(stream_id)
-                        else:
-                            await asyncio.sleep(0.05)
-            return _Stream(_iter())
+                        await asyncio.sleep(0.02)
+            finally:
+                try:
+                    await connector.__aexit__(None, None, None)
+                except Exception:
+                    pass
+        return _Stream(_iter())
 
     @staticmethod
     def _resp(evs) -> Response:
