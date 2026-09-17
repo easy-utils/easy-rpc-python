@@ -24,3 +24,17 @@ class ConformanceServiceClient:
         res = await self._t.send(Request(url="/v1/fail", body=req.SerializeToString()))
         if res.error: raise res.error
         return m.FailResponse.FromString(res.body)
+
+    async def streamFail(self, req: m.StreamFailRequest) -> "AsyncIterator[m.StreamFailResponse]":
+        st = await self._t.open_stream(Request(url="/v1/stream-fail", body=req.SerializeToString()))
+        async for chunk in st: yield m.StreamFailResponse.FromString(chunk)
+
+    async def echoMeta(self, req: m.EchoMetaRequest) -> m.EchoMetaResponse:
+        res = await self._t.send(Request(url="/v1/echo-meta", body=req.SerializeToString()))
+        if res.error: raise res.error
+        return m.EchoMetaResponse.FromString(res.body)
+
+    async def big(self, req: m.BigRequest) -> m.BigResponse:
+        res = await self._t.send(Request(url="/v1/big", body=req.SerializeToString()))
+        if res.error: raise res.error
+        return m.BigResponse.FromString(res.body)

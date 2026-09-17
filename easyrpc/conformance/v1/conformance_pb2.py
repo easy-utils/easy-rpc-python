@@ -25,7 +25,7 @@ _sym_db = _symbol_database.Default()
 from google.api import annotations_pb2 as google_dot_api_dot_annotations__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n(easyrpc/conformance/v1/conformance.proto\x12\x16\x65\x61syrpc.conformance.v1\x1a\x1cgoogle/api/annotations.proto\"\x1c\n\x0b\x45\x63hoRequest\x12\r\n\x05input\x18\x01 \x01(\t\"\x1e\n\x0c\x45\x63hoResponse\x12\x0e\n\x06output\x18\x01 \x01(\t\"\x1d\n\x0c\x43ountRequest\x12\r\n\x05\x63ount\x18\x01 \x01(\x05\"\x1e\n\rCountResponse\x12\r\n\x05index\x18\x01 \x01(\x05\"\x1e\n\x0b\x46\x61ilRequest\x12\x0f\n\x07message\x18\x01 \x01(\t\"\x1a\n\x0c\x46\x61ilResponse\x12\n\n\x02ok\x18\x01 \x01(\x08\"\x0f\n\rHealthRequest\"*\n\x0eHealthResponse\x12\n\n\x02ok\x18\x01 \x01(\x08\x12\x0c\n\x04name\x18\x02 \x01(\t2\xbf\x03\n\x12\x43onformanceService\x12k\n\x06Health\x12%.easyrpc.conformance.v1.HealthRequest\x1a&.easyrpc.conformance.v1.HealthResponse\"\x12\x82\xd3\xe4\x93\x02\x0c\x12\n/v1/health\x12\x66\n\x04\x45\x63ho\x12#.easyrpc.conformance.v1.EchoRequest\x1a$.easyrpc.conformance.v1.EchoResponse\"\x13\x82\xd3\xe4\x93\x02\r\"\x08/v1/echo:\x01*\x12l\n\x05\x43ount\x12$.easyrpc.conformance.v1.CountRequest\x1a%.easyrpc.conformance.v1.CountResponse\"\x14\x82\xd3\xe4\x93\x02\x0e\"\t/v1/count:\x01*0\x01\x12\x66\n\x04\x46\x61il\x12#.easyrpc.conformance.v1.FailRequest\x1a$.easyrpc.conformance.v1.FailResponse\"\x13\x82\xd3\xe4\x93\x02\r\"\x08/v1/fail:\x01*B@Z>github.com/easy-utils/easy-rpc-go/conformance/v1;conformancev1b\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n(easyrpc/conformance/v1/conformance.proto\x12\x16\x65\x61syrpc.conformance.v1\x1a\x1cgoogle/api/annotations.proto\"\x1c\n\x0b\x45\x63hoRequest\x12\r\n\x05input\x18\x01 \x01(\t\"\x1e\n\x0c\x45\x63hoResponse\x12\x0e\n\x06output\x18\x01 \x01(\t\"\x1d\n\x0c\x43ountRequest\x12\r\n\x05\x63ount\x18\x01 \x01(\x05\"\x1e\n\rCountResponse\x12\r\n\x05index\x18\x01 \x01(\x05\"\x1e\n\x0b\x46\x61ilRequest\x12\x0f\n\x07message\x18\x01 \x01(\t\"\x1a\n\x0c\x46\x61ilResponse\x12\n\n\x02ok\x18\x01 \x01(\x08\"\x0f\n\rHealthRequest\"*\n\x0eHealthResponse\x12\n\n\x02ok\x18\x01 \x01(\x08\x12\x0c\n\x04name\x18\x02 \x01(\t\"G\n\x11StreamFailRequest\x12\x13\n\x0b\x65mit_before\x18\x01 \x01(\x05\x12\x0c\n\x04\x63ode\x18\x02 \x01(\x05\x12\x0f\n\x07message\x18\x03 \x01(\t\"#\n\x12StreamFailResponse\x12\r\n\x05index\x18\x01 \x01(\x05\" \n\x0f\x45\x63hoMetaRequest\x12\r\n\x05input\x18\x01 \x01(\t\"\x90\x01\n\x10\x45\x63hoMetaResponse\x12\r\n\x05input\x18\x01 \x01(\t\x12@\n\x04meta\x18\x02 \x03(\x0b\x32\x32.easyrpc.conformance.v1.EchoMetaResponse.MetaEntry\x1a+\n\tMetaEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"\x1a\n\nBigRequest\x12\x0c\n\x04size\x18\x01 \x01(\x05\"\x1b\n\x0b\x42igResponse\x12\x0c\n\x04size\x18\x02 \x01(\x05\x32\xa0\x06\n\x12\x43onformanceService\x12k\n\x06Health\x12%.easyrpc.conformance.v1.HealthRequest\x1a&.easyrpc.conformance.v1.HealthResponse\"\x12\x82\xd3\xe4\x93\x02\x0c\x12\n/v1/health\x12\x66\n\x04\x45\x63ho\x12#.easyrpc.conformance.v1.EchoRequest\x1a$.easyrpc.conformance.v1.EchoResponse\"\x13\x82\xd3\xe4\x93\x02\r\"\x08/v1/echo:\x01*\x12l\n\x05\x43ount\x12$.easyrpc.conformance.v1.CountRequest\x1a%.easyrpc.conformance.v1.CountResponse\"\x14\x82\xd3\xe4\x93\x02\x0e\"\t/v1/count:\x01*0\x01\x12\x66\n\x04\x46\x61il\x12#.easyrpc.conformance.v1.FailRequest\x1a$.easyrpc.conformance.v1.FailResponse\"\x13\x82\xd3\xe4\x93\x02\r\"\x08/v1/fail:\x01*\x12\x81\x01\n\nStreamFail\x12).easyrpc.conformance.v1.StreamFailRequest\x1a*.easyrpc.conformance.v1.StreamFailResponse\"\x1a\x82\xd3\xe4\x93\x02\x14\"\x0f/v1/stream-fail:\x01*0\x01\x12w\n\x08\x45\x63hoMeta\x12\'.easyrpc.conformance.v1.EchoMetaRequest\x1a(.easyrpc.conformance.v1.EchoMetaResponse\"\x18\x82\xd3\xe4\x93\x02\x12\"\r/v1/echo-meta:\x01*\x12\x62\n\x03\x42ig\x12\".easyrpc.conformance.v1.BigRequest\x1a#.easyrpc.conformance.v1.BigResponse\"\x12\x82\xd3\xe4\x93\x02\x0c\"\x07/v1/big:\x01*B@Z>github.com/easy-utils/easy-rpc-go/conformance/v1;conformancev1b\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -33,6 +33,8 @@ _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'easyrpc.conformance.v1.conf
 if not _descriptor._USE_C_DESCRIPTORS:
   _globals['DESCRIPTOR']._loaded_options = None
   _globals['DESCRIPTOR']._serialized_options = b'Z>github.com/easy-utils/easy-rpc-go/conformance/v1;conformancev1'
+  _globals['_ECHOMETARESPONSE_METAENTRY']._loaded_options = None
+  _globals['_ECHOMETARESPONSE_METAENTRY']._serialized_options = b'8\001'
   _globals['_CONFORMANCESERVICE'].methods_by_name['Health']._loaded_options = None
   _globals['_CONFORMANCESERVICE'].methods_by_name['Health']._serialized_options = b'\202\323\344\223\002\014\022\n/v1/health'
   _globals['_CONFORMANCESERVICE'].methods_by_name['Echo']._loaded_options = None
@@ -41,6 +43,12 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_CONFORMANCESERVICE'].methods_by_name['Count']._serialized_options = b'\202\323\344\223\002\016\"\t/v1/count:\001*'
   _globals['_CONFORMANCESERVICE'].methods_by_name['Fail']._loaded_options = None
   _globals['_CONFORMANCESERVICE'].methods_by_name['Fail']._serialized_options = b'\202\323\344\223\002\r\"\010/v1/fail:\001*'
+  _globals['_CONFORMANCESERVICE'].methods_by_name['StreamFail']._loaded_options = None
+  _globals['_CONFORMANCESERVICE'].methods_by_name['StreamFail']._serialized_options = b'\202\323\344\223\002\024\"\017/v1/stream-fail:\001*'
+  _globals['_CONFORMANCESERVICE'].methods_by_name['EchoMeta']._loaded_options = None
+  _globals['_CONFORMANCESERVICE'].methods_by_name['EchoMeta']._serialized_options = b'\202\323\344\223\002\022\"\r/v1/echo-meta:\001*'
+  _globals['_CONFORMANCESERVICE'].methods_by_name['Big']._loaded_options = None
+  _globals['_CONFORMANCESERVICE'].methods_by_name['Big']._serialized_options = b'\202\323\344\223\002\014\"\007/v1/big:\001*'
   _globals['_ECHOREQUEST']._serialized_start=98
   _globals['_ECHOREQUEST']._serialized_end=126
   _globals['_ECHORESPONSE']._serialized_start=128
@@ -57,6 +65,20 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_HEALTHREQUEST']._serialized_end=298
   _globals['_HEALTHRESPONSE']._serialized_start=300
   _globals['_HEALTHRESPONSE']._serialized_end=342
-  _globals['_CONFORMANCESERVICE']._serialized_start=345
-  _globals['_CONFORMANCESERVICE']._serialized_end=792
+  _globals['_STREAMFAILREQUEST']._serialized_start=344
+  _globals['_STREAMFAILREQUEST']._serialized_end=415
+  _globals['_STREAMFAILRESPONSE']._serialized_start=417
+  _globals['_STREAMFAILRESPONSE']._serialized_end=452
+  _globals['_ECHOMETAREQUEST']._serialized_start=454
+  _globals['_ECHOMETAREQUEST']._serialized_end=486
+  _globals['_ECHOMETARESPONSE']._serialized_start=489
+  _globals['_ECHOMETARESPONSE']._serialized_end=633
+  _globals['_ECHOMETARESPONSE_METAENTRY']._serialized_start=590
+  _globals['_ECHOMETARESPONSE_METAENTRY']._serialized_end=633
+  _globals['_BIGREQUEST']._serialized_start=635
+  _globals['_BIGREQUEST']._serialized_end=661
+  _globals['_BIGRESPONSE']._serialized_start=663
+  _globals['_BIGRESPONSE']._serialized_end=690
+  _globals['_CONFORMANCESERVICE']._serialized_start=693
+  _globals['_CONFORMANCESERVICE']._serialized_end=1493
 # @@protoc_insertion_point(module_scope)
