@@ -127,6 +127,27 @@ def read_frame(buf: bytes) -> Optional[tuple]:
     return buf[5:5 + length], bool(flags & FLAG_END_STREAM), 5 + length
 
 
+HEADER_TIMEOUT = "connect-timeout-ms"
+
+
+def parse_timeout(value) -> int:
+    """Parse the Connect timeout header into milliseconds (0 = none)."""
+    if not value:
+        return 0
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return n if n > 0 else 0
+
+
+def with_timeout(req: "Request", timeout_ms: int) -> "Request":
+    if timeout_ms <= 0:
+        return req
+    req.headers[HEADER_TIMEOUT] = [str(timeout_ms)]
+    return req
+
+
 def url_for(pkg: str, svc: str, method: str) -> str:
     return f"/{pkg}.{svc}/{method}"
 
