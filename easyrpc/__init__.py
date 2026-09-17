@@ -25,6 +25,9 @@ class Request:
     method: str = "POST"
     headers: Dict[str, List[str]] = field(default_factory=dict)
     body: Optional[bytes] = None
+    # Local cancellation channel (asyncio.Event). Adapters that support abort
+    # honour it; others ignore it.
+    abort: Optional["asyncio.Event"] = None
 
 
 @dataclass
@@ -269,14 +272,29 @@ class MetadataInterceptor(Interceptor):
 
 
 class TimeoutInterceptor(Interceptor):
+    """Deadline: sets the Connect header and a local abort Event; the adapter
+    races the call against it, so cancellation works on any adapter."""
+
     def __init__(self, timeout_ms: int):
         self._ms = timeout_ms
 
+    async def _run(self, req, next_):
+        if self._ms <= 0:
+            return await next_(req)
+        req = with_timeout(req, self._ms)
+        ev = asyncio.Event()
+        req.abort = ev
+        try:
+            return await asyncio.wait_for(next_(req), timeout=self._ms / 1000.0)
+        except asyncio.TimeoutError:
+            ev.set()
+            raise RPCError(4, "deadline exceeded")
+
     async def unary(self, req, next_):
-        return await next_(with_timeout(req, self._ms))
+        return await self._run(req, next_)
 
     async def stream(self, req, next_):
-        return await next_(with_timeout(req, self._ms))
+        return await self._run(req, next_)
 
 
 
