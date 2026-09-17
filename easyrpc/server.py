@@ -11,7 +11,10 @@ from __future__ import annotations
 from typing import Awaitable, Callable, Dict, Optional, Protocol
 
 from . import RPCError, Request, frame, read_frame, http_status, MethodSpec  # noqa: F401
-from . import FLAG_END_STREAM, encode_end_stream, decode_end_stream, encode_error_json  # noqa: F401
+from . import (
+    FLAG_END_STREAM, encode_end_stream, decode_end_stream, encode_error_json,  # noqa: F401
+    HEADER_PROTOCOL_VERSION, CONNECT_PROTOCOL_VERSION, DEFAULT_MAX_MESSAGE_BYTES,
+)
 
 ContentKind = str  # 'proto' | 'json'
 
@@ -58,6 +61,11 @@ async def dispatch(
     path = req.url.split("?", 1)[0]
     ct = req.headers.get("content-type", [""])[0]
     kind = detect_kind(ct)
+    pv = req.headers.get(HEADER_PROTOCOL_VERSION, [""])[0]
+    if pv and pv != CONNECT_PROTOCOL_VERSION:
+        return await _write_error(w, RPCError(12, f"unsupported connect-protocol-version: {pv}"))
+    if len(req.body or b"") > DEFAULT_MAX_MESSAGE_BYTES:
+        return await _write_error(w, RPCError(8, "request too large"))
 
     spec = next((m for m in methods if m.path == path), None)
     if spec is None:

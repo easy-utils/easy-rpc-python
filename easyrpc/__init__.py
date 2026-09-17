@@ -143,12 +143,17 @@ def read_frame(buf: bytes) -> Optional[tuple]:
         return None
     flags = buf[0]
     length = int.from_bytes(buf[1:5], "big")
+    if length > DEFAULT_MAX_MESSAGE_BYTES:
+        raise RPCError(8, f"frame too large: {length} > {DEFAULT_MAX_MESSAGE_BYTES}")
     if len(buf) < 5 + length:
         return None
     return buf[5:5 + length], bool(flags & FLAG_END_STREAM), 5 + length
 
 
 HEADER_TIMEOUT = "connect-timeout-ms"
+HEADER_PROTOCOL_VERSION = "connect-protocol-version"
+CONNECT_PROTOCOL_VERSION = "1"
+DEFAULT_MAX_MESSAGE_BYTES = 4 * 1024 * 1024
 
 
 def parse_timeout(value) -> int:
