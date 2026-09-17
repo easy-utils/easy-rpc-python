@@ -209,11 +209,13 @@ def gzip_compress(data: bytes) -> bytes:
 
 
 def gzip_decompress(data: bytes) -> bytes:
+    """gzip-decompress a flagged frame payload. Raises RPCError(13) on corrupt
+    input (fault matrix M10): never silently yield raw compressed bytes."""
     import gzip as _g
     try:
         return _g.decompress(data)
-    except Exception:
-        return data
+    except Exception as e:  # noqa: BLE001
+        raise RPCError(13, f"corrupt gzip frame: {e}") from e
 
 
 def read_frame(buf: bytes) -> Optional[tuple]:
@@ -292,11 +294,16 @@ def connect(
     mode: str = MODE_AUTO,
     timeout_ms: int = 0,
     interceptors_extra=None,
+    transport: Transport = None,
 ) -> Transport:
     """Composition root: pick an adapter by `mode`, install the built-in
     metadata/deadline interceptors, then any user interceptors. Swapping `mode`
-    leaves the interceptors unchanged."""
-    if mode == MODE_AUTO:
+    leaves the interceptors unchanged. `transport` injects a custom adapter
+    (mode selection is skipped); the standard interceptors wrap IT — the same
+    injection semantics as C# ConnectOptions.Adapter / Swift connect(transport:)."""
+    if transport is not None:
+        inner = transport
+    elif mode == MODE_AUTO:
         from .client_selector import default_client
         inner = default_client(base=base, realm="auto")
     else:
@@ -448,7 +455,22 @@ class HttpxTransport(Transport):
                 self._close = close_fn
                 self._acc = b""
                 self._started = False
+                self._ended = False
                 self._gen = self._frames()
+
+            async def _anext(self):
+                try:
+                    return await self._gen.__anext__()
+                except StopAsyncIteration:
+                    # Fault matrix F2: the Connect protocol requires every
+                    # server-stream to terminate with an END frame; a body that
+                    # ends without one (or with trailing partial bytes, M8)
+                    # was truncated mid-stream.
+                    if self._acc:
+                        raise RPCError(13, "truncated frame at end of stream")
+                    if not self._ended:
+                        raise RPCError(13, "stream ended without END frame")
+                    raise
 
             async def _frames(self):
                 async for chunk in self._it:
@@ -463,6 +485,7 @@ class HttpxTransport(Transport):
                             code, message, details = decode_end_stream(payload)
                             if code != 0:
                                 raise RPCError(code, message, details)
+                            self._ended = True
                             return
                         yield payload
 
@@ -470,10 +493,7 @@ class HttpxTransport(Transport):
                 return self
 
             async def __anext__(self):
-                try:
-                    return await self._gen.__anext__()
-                except StopAsyncIteration:
-                    raise StopAsyncIteration
+                return await self._anext()
 
             def cancel(self):
                 self._close()
