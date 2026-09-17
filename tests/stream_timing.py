@@ -12,7 +12,7 @@ from easyrpc.server import ServerRegistry, dispatch
 async def main() -> None:
     reg = ServerRegistry()
 
-    async def slow(req: bytes, kind: str, emit) -> None:
+    async def slow(req: bytes, kind: str, _h, emit) -> None:
         for i in range(3):
             await emit(bytes([i]), False)
             await asyncio.sleep(0.2)
