@@ -38,3 +38,12 @@ class ConformanceServiceClient:
         res = await self._t.send(Request(url="/v1/big", body=req.SerializeToString()))
         if res.error: raise res.error
         return m.BigResponse.FromString(res.body)
+
+    async def failDetails(self, req: m.FailDetailsRequest) -> m.FailDetailsResponse:
+        res = await self._t.send(Request(url="/v1/fail-details", body=req.SerializeToString()))
+        if res.error: raise res.error
+        return m.FailDetailsResponse.FromString(res.body)
+
+    async def streamFailDetails(self, req: m.StreamFailDetailsRequest) -> "AsyncIterator[m.StreamFailDetailsResponse]":
+        st = await self._t.open_stream(Request(url="/v1/stream-fail-details", body=req.SerializeToString()))
+        async for chunk in st: yield m.StreamFailDetailsResponse.FromString(chunk)

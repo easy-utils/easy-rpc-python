@@ -1,5 +1,7 @@
 """Timing test: server-stream dispatch pushes frames incrementally (never
 buffered). Run with `python tests/stream_timing.py`."""
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import asyncio
 import time
 

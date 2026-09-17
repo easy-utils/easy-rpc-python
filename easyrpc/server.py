@@ -19,8 +19,8 @@ from . import (
 
 ContentKind = str  # 'proto' | 'json'
 
-UnaryHandler = Callable[[bytes, str], bytes]
-StreamHandler = Callable[[bytes, str, Callable[[bytes, bool], "Awaitable[None]"]], "Awaitable[None]"]
+UnaryHandler = Callable[[bytes, str, Dict[str, str]], bytes]
+StreamHandler = Callable[[bytes, str, Dict[str, str], Callable[[bytes, bool], "Awaitable[None]"]], "Awaitable[None]"]
 
 
 class ResponseWriter(Protocol):
@@ -97,12 +97,12 @@ async def dispatch(
                 await w.write_frame(frame(payload, False))
 
         try:
-            await h(req.body or b"", kind, emit)
+            await h(req.body or b"", kind, req.headers, emit)
         except Exception as e:  # noqa: BLE001
             err = e if isinstance(e, RPCError) else RPCError(13, str(e))
             if not ended:
                 ended = True
-                await w.write_frame(frame(encode_end_stream(err.code, err.message), True))
+                await w.write_frame(frame(encode_end_stream(err.code, err.message, err.details), True))
             return
         if not ended:
             await w.write_frame(frame(b"", True))
@@ -112,7 +112,7 @@ async def dispatch(
     if h is None:
         return await _write_error(w, RPCError(5, "no handler"))
     try:
-        out = h(req.body or b"", kind)
+        out = h(req.body or b"", kind, req.headers)
     except Exception as e:  # noqa: BLE001
         err = e if isinstance(e, RPCError) else RPCError(13, str(e))
         return await _write_error(w, err)
@@ -124,7 +124,7 @@ async def dispatch(
 async def _write_error(w: ResponseWriter, err: RPCError) -> None:
     w.status(http_status(err.code))
     w.header("content-type", "application/json")
-    await w.write_frame(encode_error_json(err.code, err.message))
+    await w.write_frame(encode_error_json(err.code, err.message, err.details))
 
 
 # ---- aiohttp adapter ----

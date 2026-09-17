@@ -12,9 +12,24 @@ import httpx
 
 
 @dataclass
+class ErrorDetail:
+    """A structured error detail (spec §4.1, aligned with Connect Error
+    Details / gRPC google.rpc status details). type_ is the wire "type" (a
+    type URL); value is opaque bytes (typically an encoded protobuf message)."""
+    type_: str = ""
+    value: bytes = b""
+
+
+@dataclass
 class RPCError(Exception):
     code: int = 13
     message: str = ""
+    details: list = None  # Optional[List[ErrorDetail]]; opaque to the wire layer.
+
+    def __post_init__(self):
+        if self.details is None:
+            self.details = []
+
     def __str__(self) -> str:
         return f"easyrpc: code={self.code} {self.message}"
 
@@ -52,7 +67,9 @@ def http_status(code: int) -> int:
 
 def rpc_error_from(status: int, headers, body) -> "RPCError":
     """Reconstruct an RPCError from the server's `connect-code`/`connect-error`
-    headers (the HTTP status alone is lossy)."""
+    headers (the HTTP status alone is lossy). Details never travel in headers,
+    so when the header carries the code the JSON body is still consulted for
+    details (spec §4.1)."""
     code = None
     try:
         code = headers.get("connect-code")
@@ -60,12 +77,13 @@ def rpc_error_from(status: int, headers, body) -> "RPCError":
         code = None
     if code is not None:
         try:
-            return RPCError(int(code), str(headers.get("connect-error", "")))
+            _, _, hd = decode_error_json(body if isinstance(body, (bytes, bytearray)) else b"")
+            return RPCError(int(code), str(headers.get("connect-error", "")), hd)
         except (TypeError, ValueError):
             pass
-    c2, m2 = decode_error_json(body if isinstance(body, (bytes, bytearray)) else b"")
+    c2, m2, d2 = decode_error_json(body if isinstance(body, (bytes, bytearray)) else b"")
     if c2 != 0:
-        return RPCError(c2, m2)
+        return RPCError(c2, m2, d2)
     text = body.decode() if isinstance(body, (bytes, bytearray)) else str(body)
     return RPCError(connect_from_status(status), text)
 
@@ -96,44 +114,88 @@ def code_from_string(name: str) -> int:
     return CODE_BY_NAME.get(name, 2)
 
 
-def encode_end_stream(code: int, message: str) -> bytes:
+def _wire_details(details) -> list:
+    import base64
+    return [{"type": d.type_, "value": base64.b64encode(bytes(d.value)).decode("ascii")} for d in (details or [])]
+
+
+def _parse_wire_details(v) -> list:
+    """Parse the JSON details array; malformed entries are skipped, never
+    fatal (matrix M7)."""
+    import base64
+    if not isinstance(v, list):
+        return []
+    out = []
+    for el in v:
+        if not isinstance(el, dict):
+            continue
+        t, val = el.get("type"), el.get("value")
+        if not isinstance(t, str) or not t or not isinstance(val, str) or not val:
+            continue
+        try:
+            out.append(ErrorDetail(t, base64.b64decode(val, validate=True)))
+        except Exception:
+            continue
+    return out
+
+
+def encode_end_stream(code: int, message: str, details=None) -> bytes:
     """Connect end-stream payload: `{"error":{"code":"<name>","message":"..."}}`;
-    a clean end is empty."""
+    a clean end is empty. Details (spec §4.1) are included when non-empty."""
     if code == 0:
         return b""
-    return json.dumps({"error": {"code": code_to_string(code), "message": message}}).encode("utf-8")
+    err = {"code": code_to_string(code), "message": message}
+    wire = _wire_details(details)
+    if wire:
+        err["details"] = wire
+    return json.dumps({"error": err}).encode("utf-8")
 
 
 def decode_end_stream(payload: bytes) -> tuple:
-    """Decode a Connect end-stream payload into (code, message); (0, '') clean."""
+    """Decode a Connect end-stream payload into (code, message, details);
+    (0, '', []) is a clean end. Malformed input is a clean end (matrix M2);
+    an error object without a code maps to code 2 (M3/M4); unknown fields
+    are ignored (M5)."""
     if not payload:
-        return (0, "")
+        return (0, "", [])
     try:
         v = json.loads(payload.decode("utf-8"))
         e = v.get("error") if isinstance(v, dict) else None
         if not isinstance(e, dict):
-            return (0, "")
-        return (code_from_string(e.get("code", "unknown")), str(e.get("message", "")))
+            return (0, "", [])
+        code = e.get("code")
+        return (
+            code_from_string(code) if isinstance(code, str) else 2,
+            str(e.get("message", "")) if isinstance(e.get("message"), str) else "",
+            _parse_wire_details(e.get("details")),
+        )
     except Exception:
-        return (0, "")
+        return (0, "", [])
 
 
-def encode_error_json(code: int, message: str) -> bytes:
-    """Connect unary error body `{code,message}`."""
-    return json.dumps({"code": code_to_string(code), "message": message}).encode("utf-8")
+def encode_error_json(code: int, message: str, details=None) -> bytes:
+    """Connect unary error body `{code,message[,details]}`."""
+    body = {"code": code_to_string(code), "message": message}
+    wire = _wire_details(details)
+    if wire:
+        body["details"] = wire
+    return json.dumps(body).encode("utf-8")
 
 
 def decode_error_json(body: bytes) -> tuple:
-    """Parse a Connect unary error body; (0, '') when not an error body."""
+    """Parse a Connect unary error body; (0, '', []) when not an error body."""
     if not body:
-        return (0, "")
+        return (0, "", [])
     try:
         v = json.loads(body.decode("utf-8"))
         if isinstance(v, dict) and isinstance(v.get("code"), str):
-            return (code_from_string(v["code"]), str(v.get("message", "")))
+            msg = v.get("message")
+            return (code_from_string(v["code"]),
+                    msg if isinstance(msg, str) else "",
+                    _parse_wire_details(v.get("details")))
     except Exception:
         pass
-    return (0, "")
+    return (0, "", [])
 
 
 def frame(payload: bytes, end: bool = False) -> bytes:
@@ -398,9 +460,9 @@ class HttpxTransport(Transport):
                         payload, end, consumed = step
                         self._acc = self._acc[consumed:]
                         if end:
-                            code, message = decode_end_stream(payload)
+                            code, message, details = decode_end_stream(payload)
                             if code != 0:
-                                raise RPCError(code, message)
+                                raise RPCError(code, message, details)
                             return
                         yield payload
 

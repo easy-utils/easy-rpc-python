@@ -45,6 +45,31 @@ async def main():
     c2 = ConformanceServiceClient(_Meta(t, {"x-test": ["abc"]}))
     m = await c2.echoMeta(pb.EchoMetaRequest(input="hi"))
     assert m.meta.get("x-test") == "abc", dict(m.meta)
-    print("python stream-fail + echo-meta ok")
+
+    # error details (spec §4.1): unary + stream must surface structured details.
+    raised = None
+    try:
+        await c.failDetails(pb.FailDetailsRequest(
+            code=8, message="limited",
+            detail_type="type.googleapis.com/google.rpc.RetryInfo", detail_text="retry:5s"))
+    except Exception as e:  # noqa: BLE001
+        raised = e
+    assert getattr(raised, "code", None) == 8, raised
+    ds = getattr(raised, "details", None) or []
+    assert len(ds) == 1 and ds[0].type_ == "type.googleapis.com/google.rpc.RetryInfo" \
+        and ds[0].value == b"retry:5s", ds
+
+    seen = []
+    raised = None
+    try:
+        async for r in c.streamFailDetails(pb.StreamFailDetailsRequest(
+                emit_before=2, code=13, message="boom", detail_type="t/stream", detail_text="sd")):
+            seen.append(r.index)
+    except Exception as e:  # noqa: BLE001
+        raised = e
+    assert seen == [0, 1], seen
+    ds = getattr(raised, "details", None) or []
+    assert getattr(raised, "code", None) == 13 and ds and ds[0].type_ == "t/stream" and ds[0].value == b"sd", raised
+    print("python error-details ok")
 
 asyncio.run(main())
