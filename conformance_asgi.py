@@ -134,7 +134,7 @@ async def handle(scope, receive, send, headers):
         return
 
     is_stream, name = msg
-    kind = "json" if headers.get("content-type", "").startswith("application/json") else "proto"
+    kind = "json" if headers.get("content-type", "").startswith(("application/json", "application/connect+json")) else "proto"
 
     body = b""
     while True:

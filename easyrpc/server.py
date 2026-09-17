@@ -40,7 +40,9 @@ class ServerRegistry:
 
 
 def detect_kind(ct: str) -> ContentKind:
-    return "json" if ct.startswith("application/json") else "proto"
+    # Streaming JSON arrives as application/connect+json — both prefixes are
+    # JSON kinds (spec §2).
+    return "json" if ct.startswith("application/json") or ct.startswith("application/connect+json") else "proto"
 
 
 def stream_content(kind: ContentKind) -> str:

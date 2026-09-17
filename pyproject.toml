@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "easy-rpc-python"
-version = "0.5.1"
+version = "0.5.3"
 description = "Zero-runtime-bindings easy-rpc core for Python (Connect wire: unary + server-stream)."
 requires-python = ">=3.11"
 dependencies = ["httpx>=0.27"]

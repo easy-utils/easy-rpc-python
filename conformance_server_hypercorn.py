@@ -7,7 +7,7 @@ from conformance_asgi import asgi_app
 
 async def main():
     config = Config()
-    config.bind = ["127.0.0.1:" + os.environ.get("PORT", "18888")]
+    config.bind = [os.environ.get("BIND", "0.0.0.0") + ":" + os.environ.get("PORT", "18888")]
     # Give Hypercorn the chance to serve h2c: it handles both h2c and h1 by default.
     await serve(asgi_app, config)
 
