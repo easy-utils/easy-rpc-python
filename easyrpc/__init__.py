@@ -138,6 +138,19 @@ def frame(payload: bytes, end: bool = False) -> bytes:
     return bytes([flags]) + len(payload).to_bytes(4, "big") + payload
 
 
+def gzip_compress(data: bytes) -> bytes:
+    import gzip as _g
+    return _g.compress(data)
+
+
+def gzip_decompress(data: bytes) -> bytes:
+    import gzip as _g
+    try:
+        return _g.decompress(data)
+    except Exception:
+        return data
+
+
 def read_frame(buf: bytes) -> Optional[tuple]:
     if len(buf) < 5:
         return None
@@ -147,11 +160,17 @@ def read_frame(buf: bytes) -> Optional[tuple]:
         raise RPCError(8, f"frame too large: {length} > {DEFAULT_MAX_MESSAGE_BYTES}")
     if len(buf) < 5 + length:
         return None
-    return buf[5:5 + length], bool(flags & FLAG_END_STREAM), 5 + length
+    payload = buf[5:5 + length]
+    if flags & 0x01:
+        payload = gzip_decompress(payload)
+    return payload, bool(flags & FLAG_END_STREAM), 5 + length
 
 
 HEADER_TIMEOUT = "connect-timeout-ms"
 HEADER_PROTOCOL_VERSION = "connect-protocol-version"
+HEADER_ACCEPT_ENCODING = "connect-accept-encoding"
+ENCODING_GZIP = "gzip"
+COMPRESS_MIN_BYTES = 1024
 CONNECT_PROTOCOL_VERSION = "1"
 DEFAULT_MAX_MESSAGE_BYTES = 4 * 1024 * 1024
 

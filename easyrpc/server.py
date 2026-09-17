@@ -14,6 +14,7 @@ from . import RPCError, Request, frame, read_frame, http_status, MethodSpec  # n
 from . import (
     FLAG_END_STREAM, encode_end_stream, decode_end_stream, encode_error_json,  # noqa: F401
     HEADER_PROTOCOL_VERSION, CONNECT_PROTOCOL_VERSION, DEFAULT_MAX_MESSAGE_BYTES,
+    HEADER_ACCEPT_ENCODING, ENCODING_GZIP, COMPRESS_MIN_BYTES, gzip_compress,
 )
 
 ContentKind = str  # 'proto' | 'json'
@@ -78,6 +79,11 @@ async def dispatch(
         w.header("content-type", stream_content(kind))
         ended = False
 
+        wants_gzip = any(
+            ENCODING_GZIP in [x.strip() for x in v.split(",")]
+            for v in req.headers.get(HEADER_ACCEPT_ENCODING, [])
+        )
+
         async def emit(payload: bytes, end: bool) -> None:
             nonlocal ended
             if ended:
@@ -85,6 +91,8 @@ async def dispatch(
             if end:
                 ended = True
                 await w.write_frame(frame(b"", True))
+            elif wants_gzip and len(payload) >= COMPRESS_MIN_BYTES:
+                await w.write_frame(bytes([0x01]) + len(gzip_compress(payload)).to_bytes(4, "big") + gzip_compress(payload))
             else:
                 await w.write_frame(frame(payload, False))
 
