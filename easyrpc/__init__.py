@@ -218,6 +218,37 @@ class Transport:
     async def open_stream(self, req: Request) -> "Stream":
         raise NotImplementedError
 
+# ---- composition root ----
+
+MODE_AUTO = "auto"
+MODE_STD = "std"
+
+
+def connect(
+    base: str,
+    token: str = "",
+    mode: str = MODE_AUTO,
+    timeout_ms: int = 0,
+    interceptors_extra=None,
+) -> Transport:
+    """Composition root: pick an adapter by `mode`, install the built-in
+    metadata/deadline interceptors, then any user interceptors. Swapping `mode`
+    leaves the interceptors unchanged."""
+    if mode == MODE_AUTO:
+        from .client_selector import default_client
+        inner = default_client(base=base, realm="auto")
+    else:
+        inner = HttpxTransport(base=base)
+    ics = []
+    if token:
+        ics.append(MetadataInterceptor({"authorization": [f"Bearer {token}"]}))
+    if timeout_ms > 0:
+        ics.append(TimeoutInterceptor(timeout_ms))
+    for ic in interceptors_extra or []:
+        ics.append(ic)
+    return interceptors(inner, *ics) if ics else inner
+
+
 class Interceptor:
     """Wrap a Transport call: mutate the request (auth/metadata), impose a
     deadline, observe, or short-circuit. `next_` performs the call."""
