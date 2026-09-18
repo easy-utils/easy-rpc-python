@@ -21,37 +21,37 @@ def _detail():
 
 
 def m_m1_empty_payload_clean_end():
-    check(decode_end_stream(b"") == (0, "", []), "M1")
+    check(decode_end_stream(b"") == (0, "", [], {}), "M1")
 
 
 def m_m2_garbage_is_clean_end():
-    check(decode_end_stream(bytes([0xFF, 0xFE, 0x00, 0x42])) == (0, "", []), "M2")
+    check(decode_end_stream(bytes([0xFF, 0xFE, 0x00, 0x42])) == (0, "", [], {}), "M2")
 
 
 def m_m3_error_without_code_is_unknown():
-    code, msg, _ = decode_end_stream(b'{"error":{}}')
+    code, msg, _, _ = decode_end_stream(b'{"error":{}}')
     check((code, msg) == (2, ""), "M3")
 
 
 def m_m4_unknown_code_name_is_2():
-    code, msg, _ = decode_end_stream(b'{"error":{"code":"nope","message":"m"}}')
+    code, msg, _, _ = decode_end_stream(b'{"error":{"code":"nope","message":"m"}}')
     check((code, msg) == (2, "m"), "M4")
 
 
 def m_m5_unknown_fields_ignored():
-    code, _, _ = decode_end_stream(b'{"error":{"code":"not_found","message":"m"},"x":1}')
+    code, _, _, _ = decode_end_stream(b'{"error":{"code":"not_found","message":"m"},"x":1}')
     check(code == 5, "M5")
 
 
 def m_m6_details_roundtrip():
     payload = encode_end_stream(8, "rate limited", [_detail()])
-    code, msg, ds = decode_end_stream(payload)
+    code, msg, ds, _ = decode_end_stream(payload)
     check(code == 8 and msg == "rate limited", "M6")
     check(ds == [_detail()], "M6b")
 
 
 def m_m7_malformed_details_skipped():
-    _, _, ds = decode_end_stream(
+    _, _, ds, _ = decode_end_stream(
         b'{"error":{"code":"resource_exhausted","details":'
         b'[{"type":"t","value":"!!!"},{"value":"x"},{"type":"ok"},{"type":"t2","value":"AQID"}]}}'
     )

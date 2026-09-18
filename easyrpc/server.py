@@ -1,26 +1,31 @@
-"""easy-rpc Python server core: push-based ASGI dispatch + JSON/proto content
-negotiation.
+"""easy-rpc Python server core: push-based ASGI dispatch for the Connect wire
+subset (unary + server-stream, proto only, POST only).
 
-`Dispatch` decodes an RPC request, runs the handler, and PUSHES the response
-into a `ResponseWriter` as it is produced. A runtime adapter (aiohttp,
-uvicorn/hypercorn ASGI, ...) implements the writer and flushes each frame, so
-server-stream RPCs reach the client incrementally — never buffered.
+`dispatch` decodes an RPC request, runs the handler, and PUSHES the response
+into a `ResponseWriter`. A runtime adapter (aiohttp, uvicorn/hypercorn ASGI, ...)
+implements the writer and flushes each frame, so server-stream RPCs reach the
+client incrementally — never buffered.
 """
 from __future__ import annotations
 
-from typing import Awaitable, Callable, Dict, Optional, Protocol
+from typing import Awaitable, Callable, Dict, List, Protocol
 
 from . import RPCError, Request, frame, read_frame, http_status, MethodSpec  # noqa: F401
 from . import (
     FLAG_END_STREAM, encode_end_stream, decode_end_stream, encode_error_json,  # noqa: F401
     HEADER_PROTOCOL_VERSION, CONNECT_PROTOCOL_VERSION, DEFAULT_MAX_MESSAGE_BYTES,
-    HEADER_ACCEPT_ENCODING, ENCODING_GZIP, COMPRESS_MIN_BYTES, gzip_compress,
+    ENCODING_GZIP, COMPRESS_MIN_BYTES, gzip_compress,
+    HandlerContext, mux_trailers, gzip_decompress,
 )
 
-ContentKind = str  # 'proto' | 'json'
+CONTENT_TYPE_UNARY = "application/proto"
+CONTENT_TYPE_STREAM = "application/connect+proto"
+HEADER_STREAM_ACCEPT_ENCODING = "connect-accept-encoding"
+HEADER_CONTENT_ENCODING = "content-encoding"
+HEADER_ACCEPT_ENCODING = "accept-encoding"
 
-UnaryHandler = Callable[[bytes, str, Dict[str, str]], bytes]
-StreamHandler = Callable[[bytes, str, Dict[str, str], Callable[[bytes, bool], "Awaitable[None]"]], "Awaitable[None]"]
+UnaryHandler = Callable[[bytes, HandlerContext], Awaitable[bytes]]
+StreamHandler = Callable[[bytes, HandlerContext, Callable[[bytes, bool], "Awaitable[None]"]], "Awaitable[None]"]
 
 
 class ResponseWriter(Protocol):
@@ -39,23 +44,18 @@ class ServerRegistry:
         self.stream: Dict[str, StreamHandler] = {}
 
 
-def detect_kind(ct: str) -> ContentKind:
-    # Streaming JSON arrives as application/connect+json — both prefixes are
-    # JSON kinds (spec §2).
-    return "json" if ct.startswith("application/json") or ct.startswith("application/connect+json") else "proto"
-
-
-def stream_content(kind: ContentKind) -> str:
-    return "application/connect+json" if kind == "json" else "application/connect+proto"
-
-
-def _content(kind: ContentKind) -> str:
-    return "application/json" if kind == "json" else "application/proto"
+def _read_single_frame(body: bytes) -> bytes:
+    """Unframe the enveloped server-stream request (one data frame)."""
+    step = read_frame(body)
+    if step is None:
+        raise RPCError(13, "stream request: truncated frame")
+    payload, _end, _consumed = step
+    return payload
 
 
 async def dispatch(
     req: Request,
-    methods: "list[MethodSpec]",
+    methods: "List[MethodSpec]",
     reg: ServerRegistry,
     w: ResponseWriter,
 ) -> None:
@@ -63,7 +63,6 @@ async def dispatch(
     END frame. Unary resolves fully before writing so errors set a real status."""
     path = req.url.split("?", 1)[0]
     ct = req.headers.get("content-type", [""])[0]
-    kind = detect_kind(ct)
     pv = req.headers.get(HEADER_PROTOCOL_VERSION, [""])[0]
     if pv and pv != CONNECT_PROTOCOL_VERSION:
         return await _write_error(w, RPCError(12, f"unsupported connect-protocol-version: {pv}"))
@@ -73,17 +72,30 @@ async def dispatch(
     spec = next((m for m in methods if m.path == path), None)
     if spec is None:
         return await _write_error(w, RPCError(5, "not found"))
+
+    # proto-only content type (spec §2).
+    want = CONTENT_TYPE_STREAM if spec.server_stream else CONTENT_TYPE_UNARY
+    got = ct.split(";", 1)[0].strip().lower()
+    if got != want:
+        return await _write_error(w, RPCError(3, f"unsupported content-type: expected {want}"), status=415)
+
+    ctx = HandlerContext(headers={k: list(v) for k, v in req.headers.items()})
+
     if spec.server_stream:
         h = reg.stream.get(spec.name)
         if h is None:
             return await _write_error(w, RPCError(5, "no handler"))
+        try:
+            body = _read_single_frame(req.body or b"")
+        except RPCError as e:
+            return await _write_error(w, e)
         w.status(200)
-        w.header("content-type", stream_content(kind))
+        w.header("content-type", CONTENT_TYPE_STREAM)
         ended = False
 
         wants_gzip = any(
             ENCODING_GZIP in [x.strip() for x in v.split(",")]
-            for v in req.headers.get(HEADER_ACCEPT_ENCODING, [])
+            for v in req.headers.get(HEADER_STREAM_ACCEPT_ENCODING, [])
         )
 
         async def emit(payload: bytes, end: bool) -> None:
@@ -92,48 +104,63 @@ async def dispatch(
                 return
             if end:
                 ended = True
-                await w.write_frame(frame(b"", True))
+                await w.write_frame(frame(encode_end_stream(0, "", None, ctx.trailers), True))
             elif wants_gzip and len(payload) >= COMPRESS_MIN_BYTES:
-                await w.write_frame(bytes([0x01]) + len(gzip_compress(payload)).to_bytes(4, "big") + gzip_compress(payload))
+                z = gzip_compress(payload)
+                await w.write_frame(bytes([0x01]) + len(z).to_bytes(4, "big") + z)
             else:
                 await w.write_frame(frame(payload, False))
 
         try:
-            await h(req.body or b"", kind, req.headers, emit)
+            await h(body, ctx, emit)
         except Exception as e:  # noqa: BLE001
             err = e if isinstance(e, RPCError) else RPCError(13, str(e))
             if not ended:
                 ended = True
-                await w.write_frame(frame(encode_end_stream(err.code, err.message, err.details), True))
+                await w.write_frame(frame(encode_end_stream(err.code, err.message, err.details, ctx.trailers), True))
             return
         if not ended:
-            await w.write_frame(frame(b"", True))
+            await w.write_frame(frame(encode_end_stream(0, "", None, ctx.trailers), True))
         return
 
     h = reg.unary.get(spec.name)
     if h is None:
         return await _write_error(w, RPCError(5, "no handler"))
     try:
-        out = h(req.body or b"", kind, req.headers)
+        out = await h(req.body or b"", ctx)
     except Exception as e:  # noqa: BLE001
         err = e if isinstance(e, RPCError) else RPCError(13, str(e))
-        return await _write_error(w, err)
+        return await _write_error(w, err, trailers=ctx.trailers)
     w.status(200)
-    w.header("content-type", _content(kind))
+    # Unary gzip (spec §3.5): compress when the client accepts gzip.
+    wants_gzip = any(
+        ENCODING_GZIP in [x.strip() for x in v.split(",")]
+        for v in req.headers.get(HEADER_ACCEPT_ENCODING, [])
+    )
+    headers = {"content-type": CONTENT_TYPE_UNARY}
+    if wants_gzip and len(out) >= COMPRESS_MIN_BYTES:
+        out = gzip_compress(out)
+        headers[HEADER_CONTENT_ENCODING] = ENCODING_GZIP
+    w.header("content-type", headers["content-type"])
+    if HEADER_CONTENT_ENCODING in headers:
+        w.header(HEADER_CONTENT_ENCODING, ENCODING_GZIP)
+    for k, v in mux_trailers({}, ctx.trailers).items():
+        if k != "content-type":
+            w.header(k, v[0] if isinstance(v, (list, tuple)) else v)
     await w.write_frame(out)
 
 
-async def _write_error(w: ResponseWriter, err: RPCError) -> None:
-    w.status(http_status(err.code))
-    w.header("content-type", "application/json")
+async def _write_error(w: ResponseWriter, err: RPCError, status: int = None, trailers: dict = None) -> None:
+    w.status(status if status is not None else http_status(err.code))
+    for k, v in mux_trailers({"content-type": "application/json"}, trailers or {}).items():
+        w.header(k, v[0] if isinstance(v, (list, tuple)) else v)
     await w.write_frame(encode_error_json(err.code, err.message, err.details))
 
 
 # ---- aiohttp adapter ----
 
-def make_app(routes: Dict[str, tuple], methods: "list[MethodSpec]") -> "object":
-    """Build an aiohttp application. `routes` maps path -> (is_stream, name, reg)
-    (kept for backward compatibility with the conformance server)."""
+def make_app(routes: Dict[str, tuple], methods: "List[MethodSpec]") -> "object":
+    """Build an aiohttp application. `routes` maps path -> (is_stream, name, reg)."""
     from aiohttp import web
 
     app = web.Application()
@@ -144,13 +171,12 @@ def make_app(routes: Dict[str, tuple], methods: "list[MethodSpec]") -> "object":
         if entry is None:
             return web.Response(status=404)
         is_stream, name, reg = entry
-        kind = detect_kind(request.headers.get("Content-Type", ""))
         body = await request.read()
-        method = MethodSpec(service="", name=name, path=path, http_method="POST",
+        method = MethodSpec(service="", name=name, path=path,
                             client_stream=False, server_stream=is_stream)
         resp = web.StreamResponse(
             status=200,
-            headers={"Content-Type": stream_content(kind) if is_stream else _content(kind)},
+            headers={"Content-Type": CONTENT_TYPE_STREAM if is_stream else CONTENT_TYPE_UNARY},
         )
         await resp.prepare(request)
 
@@ -167,7 +193,7 @@ def make_app(routes: Dict[str, tuple], methods: "list[MethodSpec]") -> "object":
                 await resp.write(payload)
 
         await dispatch(
-            Request(url=path, method="POST",
+            Request(url=path,
                     headers={k.lower(): [v] for k, v in request.headers.items()},
                     body=body),
             [method],

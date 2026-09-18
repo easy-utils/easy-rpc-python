@@ -5,21 +5,21 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import asyncio
 import time
 
-from easyrpc import Request, MethodSpec
+from easyrpc import Request, MethodSpec, frame
 from easyrpc.server import ServerRegistry, dispatch
 
 
 async def main() -> None:
     reg = ServerRegistry()
 
-    async def slow(req: bytes, kind: str, _h, emit) -> None:
+    async def slow(req: bytes, ctx, emit) -> None:
         for i in range(3):
             await emit(bytes([i]), False)
             await asyncio.sleep(0.2)
         await emit(b"", True)
 
     reg.stream["Slow"] = slow
-    methods = [MethodSpec("", "Slow", "/t.Slow", "POST", False, True)]
+    methods = [MethodSpec("", "Slow", "/t.Slow", False, True)]
 
     class Writer:
         def __init__(self) -> None:
@@ -39,7 +39,7 @@ async def main() -> None:
 
     w = Writer()
     start = time.monotonic()
-    await dispatch(Request(url="/t.Slow", body=b""), methods, reg, w)
+    await dispatch(Request(url="/t.Slow", headers={"content-type": ["application/connect+proto"]}, body=frame(b"")), methods, reg, w)
     offsets = [round(t - start, 3) for t in w.times]
     assert w.code == 200, w.code
     assert len(w.frames) == 4, len(w.frames)

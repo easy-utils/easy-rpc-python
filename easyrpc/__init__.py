@@ -37,7 +37,6 @@ class RPCError(Exception):
 @dataclass
 class Request:
     url: str
-    method: str = "POST"
     headers: Dict[str, List[str]] = field(default_factory=dict)
     body: Optional[bytes] = None
     # Local cancellation channel (asyncio.Event). Adapters that support abort
@@ -50,6 +49,8 @@ class Response:
     status: int = 0
     headers: Dict[str, List[str]] = field(default_factory=dict)
     body: bytes = b""
+    # Unary trailing metadata (demuxed from `trailer-*` response headers).
+    trailers: Dict[str, List[str]] = field(default_factory=dict)
     error: Optional[RPCError] = None
 
 
@@ -139,38 +140,49 @@ def _parse_wire_details(v) -> list:
     return out
 
 
-def encode_end_stream(code: int, message: str, details=None) -> bytes:
-    """Connect end-stream payload: `{"error":{"code":"<name>","message":"..."}}`;
-    a clean end is empty. Details (spec §4.1) are included when non-empty."""
-    if code == 0:
-        return b""
-    err = {"code": code_to_string(code), "message": message}
-    wire = _wire_details(details)
-    if wire:
-        err["details"] = wire
-    return json.dumps({"error": err}).encode("utf-8")
+def encode_end_stream(code: int, message: str, details=None, metadata=None) -> bytes:
+    """Connect end-stream payload. A clean end still serializes as `{}` (Connect's
+    parser requires valid JSON). Carries an optional error and/or trailing
+    metadata (spec §3.3)."""
+    body: dict = {}
+    if code != 0:
+        err = {"code": code_to_string(code), "message": message}
+        wire = _wire_details(details)
+        if wire:
+            err["details"] = wire
+        body["error"] = err
+    if metadata:
+        md = {k: list(v) for k, v in metadata.items() if v}
+        if md:
+            body["metadata"] = md
+    return json.dumps(body).encode("utf-8")
 
 
 def decode_end_stream(payload: bytes) -> tuple:
-    """Decode a Connect end-stream payload into (code, message, details);
-    (0, '', []) is a clean end. Malformed input is a clean end (matrix M2);
-    an error object without a code maps to code 2 (M3/M4); unknown fields
-    are ignored (M5)."""
+    """Decode a Connect end-stream payload into (code, message, details, metadata).
+    (0, '', [], {}) is a clean end. Malformed input is a clean end (matrix M2);
+    an error object without a code maps to code 2 (M3/M4); unknown fields are
+    ignored (M5)."""
     if not payload:
-        return (0, "", [])
+        return (0, "", [], {})
     try:
         v = json.loads(payload.decode("utf-8"))
-        e = v.get("error") if isinstance(v, dict) else None
+        if not isinstance(v, dict):
+            return (0, "", [], {})
+        md = v.get("metadata")
+        metadata = {k: list(val) for k, val in md.items()} if isinstance(md, dict) else {}
+        e = v.get("error")
         if not isinstance(e, dict):
-            return (0, "", [])
+            return (0, "", [], metadata)
         code = e.get("code")
         return (
             code_from_string(code) if isinstance(code, str) else 2,
             str(e.get("message", "")) if isinstance(e.get("message"), str) else "",
             _parse_wire_details(e.get("details")),
+            metadata,
         )
     except Exception:
-        return (0, "", [])
+        return (0, "", [], {})
 
 
 def encode_error_json(code: int, message: str, details=None) -> bytes:
@@ -240,6 +252,8 @@ ENCODING_GZIP = "gzip"
 COMPRESS_MIN_BYTES = 1024
 CONNECT_PROTOCOL_VERSION = "1"
 DEFAULT_MAX_MESSAGE_BYTES = 4 * 1024 * 1024
+CONTENT_TYPE_UNARY = "application/proto"
+CONTENT_TYPE_STREAM = "application/connect+proto"
 
 
 def parse_timeout(value) -> int:
@@ -264,15 +278,46 @@ def url_for(pkg: str, svc: str, method: str) -> str:
     return f"/{pkg}.{svc}/{method}"
 
 
+TRAILER_PREFIX = "trailer-"
+
+
+def mux_trailers(headers: dict, trailers: dict) -> dict:
+    """Merge trailing metadata into response headers using the `trailer-` prefix."""
+    out = dict(headers)
+    for k, v in (trailers or {}).items():
+        out[TRAILER_PREFIX + k.lower()] = v
+    return out
+
+
+def demux_trailers(all_headers: dict) -> tuple:
+    """Split headers into (headers, trailers) by the `trailer-` prefix."""
+    h, t = {}, {}
+    for k, v in (all_headers or {}).items():
+        lk = k.lower()
+        if lk.startswith(TRAILER_PREFIX):
+            t[lk[len(TRAILER_PREFIX):]] = list(v) if isinstance(v, (list, tuple)) else [v]
+        else:
+            h[k] = list(v) if isinstance(v, (list, tuple)) else [v]
+    return h, t
+
+
+@dataclass
+class HandlerContext:
+    """Per-RPC context: request metadata + a trailing-metadata channel."""
+    headers: Dict[str, List[str]] = field(default_factory=dict)
+    trailers: Dict[str, List[str]] = field(default_factory=dict)
+
+    def set_trailer(self, key: str, value: str) -> None:
+        self.trailers.setdefault(key, []).append(value)
+
+
 @dataclass
 class MethodSpec:
     service: str
     name: str
     path: str
-    http_method: str
     client_stream: bool
     server_stream: bool
-    body: str = ""
 
 
 class Transport:
@@ -402,11 +447,42 @@ class Stream:
     async def __aiter__(self) -> AsyncIterator[bytes]:
         raise NotImplementedError
 
+    async def __anext__(self) -> bytes:
+        raise NotImplementedError
+
+    def trailers(self) -> Dict[str, List[str]]:
+        raise NotImplementedError
+
     def cancel(self) -> None:
         raise NotImplementedError
 
     def close(self) -> None:
         raise NotImplementedError
+
+
+class TypedStream:
+    """Typed server-stream handle: decodes each frame into a message and
+    exposes the trailing metadata (available after iteration completes)."""
+
+    def __init__(self, stream: "Stream", decode):
+        self._stream = stream
+        self._decode = decode
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        chunk = await self._stream.__anext__()
+        return self._decode(chunk)
+
+    def trailers(self) -> Dict[str, List[str]]:
+        return self._stream.trailers()
+
+    def cancel(self) -> None:
+        self._stream.cancel()
+
+    def close(self) -> None:
+        self._stream.close()
 
 
 class HttpxTransport(Transport):
@@ -422,24 +498,32 @@ class HttpxTransport(Transport):
 
     async def send(self, req: Request) -> Response:
         headers = {k: v[0] for k, v in req.headers.items()}
+        headers.setdefault("content-type", CONTENT_TYPE_UNARY)
+        headers.setdefault("connect-protocol-version", CONNECT_PROTOCOL_VERSION)
+        headers.setdefault("Accept-Encoding", "gzip")
         r = await self.client.request(
-            req.method, self._url(req.url),
+            "POST", self._url(req.url),
             headers=headers, content=req.body,
         )
+        body = r.content
+        if r.headers.get("content-encoding") == "gzip" and body:
+            body = gzip_decompress(body)
+        all_h, trailers = demux_trailers(dict(r.headers))
         return Response(
             status=r.status_code,
-            headers=dict(r.headers),
-            body=r.content,
-            error=rpc_error_from(r.status_code, r.headers, r.content) if r.status_code >= 300 else None,
+            headers=all_h,
+            body=body,
+            trailers=trailers,
+            error=rpc_error_from(r.status_code, r.headers, body) if r.status_code >= 300 else None,
         )
 
     async def open_stream(self, req: Request) -> "Stream":
         headers = {k: v[0] for k, v in req.headers.items()}
-        # Streaming responses must NOT buffer and must not time out mid-stream:
-        # build the request and send it with stream=True so we read frames as
-        # they arrive (server-stream RPCs stay open for the session's lifetime).
+        headers.setdefault("content-type", CONTENT_TYPE_STREAM)
+        headers.setdefault("connect-protocol-version", CONNECT_PROTOCOL_VERSION)
+        headers.setdefault("Connect-Accept-Encoding", "gzip")
         request = self.client.build_request(
-            req.method, self._url(req.url), headers=headers, content=req.body,
+            "POST", self._url(req.url), headers=headers, content=req.body,
         )
         # No read timeout: a server-stream stays open between frames.
         resp = await self.client.send(request, stream=True)
@@ -456,6 +540,7 @@ class HttpxTransport(Transport):
                 self._acc = b""
                 self._started = False
                 self._ended = False
+                self._trailers = {}
                 self._gen = self._frames()
 
             async def _anext(self):
@@ -482,7 +567,9 @@ class HttpxTransport(Transport):
                         payload, end, consumed = step
                         self._acc = self._acc[consumed:]
                         if end:
-                            code, message, details = decode_end_stream(payload)
+                            code, message, details, metadata = decode_end_stream(payload)
+                            if metadata:
+                                self._trailers = metadata
                             if code != 0:
                                 raise RPCError(code, message, details)
                             self._ended = True
@@ -494,6 +581,9 @@ class HttpxTransport(Transport):
 
             async def __anext__(self):
                 return await self._anext()
+
+            def trailers(self):
+                return self._trailers
 
             def cancel(self):
                 self._close()

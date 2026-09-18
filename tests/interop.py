@@ -12,17 +12,19 @@ async def main():
     c = ConformanceServiceClient(t)
     out = await c.echo(pb.EchoRequest(input="hi"))
     assert out.output == "echo:hi", out.output
-    idx=[]
-    async for res in c.count(pb.CountRequest(count=3)):
+    idx = []
+    st = await c.count(pb.CountRequest(count=3))
+    async for res in st:
         idx.append(res.index)
-    assert idx == [0,1,2], idx
+    assert idx == [0, 1, 2], idx
     print(f"python echo+count ok ({realm}):", out.output, idx)
 
     # stream-fail: data frames then a Connect end-stream error (must raise).
     seen = []
     raised = None
     try:
-        async for r in c.streamFail(pb.StreamFailRequest(emit_before=2, code=13, message="boom")):
+        st = await c.streamFail(pb.StreamFailRequest(emit_before=2, code=13, message="boom"))
+        async for r in st:
             seen.append(r.index)
     except Exception as e:  # noqa: BLE001
         raised = e
@@ -62,8 +64,9 @@ async def main():
     seen = []
     raised = None
     try:
-        async for r in c.streamFailDetails(pb.StreamFailDetailsRequest(
-                emit_before=2, code=13, message="boom", detail_type="t/stream", detail_text="sd")):
+        st = await c.streamFailDetails(pb.StreamFailDetailsRequest(
+                emit_before=2, code=13, message="boom", detail_type="t/stream", detail_text="sd"))
+        async for r in st:
             seen.append(r.index)
     except Exception as e:  # noqa: BLE001
         raised = e
@@ -71,5 +74,17 @@ async def main():
     ds = getattr(raised, "details", None) or []
     assert getattr(raised, "code", None) == 13 and ds and ds[0].type_ == "t/stream" and ds[0].value == b"sd", raised
     print("python error-details ok")
+
+    # trailing metadata (spec §3.3): unary + streaming.
+    ures = await c.echoTrailer(pb.EchoTrailerRequest(input="x"))
+    assert ures.output == "trailer:x", ures.output
+    assert c.last_trailers.get("x-trl") == ["unary-x"], c.last_trailers
+    st = await c.countTrailer(pb.CountTrailerRequest(count=2))
+    tidx = []
+    async for r in st:
+        tidx.append(r.index)
+    assert tidx == [0, 1], tidx
+    assert st.trailers().get("x-ctrailer") == ["done"], st.trailers()
+    print("python trailers ok")
 
 asyncio.run(main())
