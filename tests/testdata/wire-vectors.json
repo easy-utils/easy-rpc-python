@@ -1,0 +1,374 @@
+{
+  "$schema": "easy-rpc wire conformance vectors v1",
+  "description": "Language-neutral, transport-independent protocol oracle. Every implementation's protocol layer MUST reproduce these byte-for-byte (encode direction) and parse them to the stated values (decode direction). Bytes are lowercase hex. This is the ONLY check that can catch a same-source bug shared by two implementations.",
+  "protocolVersion": "1",
+  "contentTypes": {
+    "unary": "application/proto",
+    "stream": "application/connect+proto"
+  },
+  "codeNames": [
+    {
+      "code": 0,
+      "name": "ok",
+      "http": 200
+    },
+    {
+      "code": 1,
+      "name": "canceled",
+      "http": 499
+    },
+    {
+      "code": 2,
+      "name": "unknown",
+      "http": 500
+    },
+    {
+      "code": 3,
+      "name": "invalid_argument",
+      "http": 400
+    },
+    {
+      "code": 4,
+      "name": "deadline_exceeded",
+      "http": 504
+    },
+    {
+      "code": 5,
+      "name": "not_found",
+      "http": 404
+    },
+    {
+      "code": 6,
+      "name": "already_exists",
+      "http": 409
+    },
+    {
+      "code": 7,
+      "name": "permission_denied",
+      "http": 403
+    },
+    {
+      "code": 8,
+      "name": "resource_exhausted",
+      "http": 429
+    },
+    {
+      "code": 9,
+      "name": "failed_precondition",
+      "http": 400
+    },
+    {
+      "code": 10,
+      "name": "aborted",
+      "http": 409
+    },
+    {
+      "code": 11,
+      "name": "out_of_range",
+      "http": 400
+    },
+    {
+      "code": 12,
+      "name": "unimplemented",
+      "http": 501
+    },
+    {
+      "code": 13,
+      "name": "internal",
+      "http": 500
+    },
+    {
+      "code": 14,
+      "name": "unavailable",
+      "http": 503
+    },
+    {
+      "code": 15,
+      "name": "data_loss",
+      "http": 500
+    },
+    {
+      "code": 16,
+      "name": "unauthenticated",
+      "http": 401
+    }
+  ],
+  "frames": [
+    {
+      "name": "F0-empty-data",
+      "encode": {
+        "payloadHex": "",
+        "end": false,
+        "compressed": false
+      },
+      "bytesHex": "0000000000"
+    },
+    {
+      "name": "F1-payload-data",
+      "encode": {
+        "payloadHex": "0a026869",
+        "end": false,
+        "compressed": false
+      },
+      "bytesHex": "00000000040a026869"
+    },
+    {
+      "name": "F2-empty-end",
+      "encode": {
+        "payloadHex": "",
+        "end": true,
+        "compressed": false
+      },
+      "bytesHex": "0200000000"
+    },
+    {
+      "name": "F3-end-payload",
+      "encode": {
+        "payloadHex": "7b7d",
+        "end": true,
+        "compressed": false
+      },
+      "bytesHex": "02000000027b7d"
+    },
+    {
+      "name": "F4-compressed-flag",
+      "encode": {
+        "payloadHex": "1f8b",
+        "end": false,
+        "compressed": true
+      },
+      "bytesHex": "01000000021f8b"
+    }
+  ],
+  "endStream": [
+    {
+      "name": "E0-clean-object",
+      "decode": {
+        "bytesHex": "7b7d"
+      },
+      "code": 0,
+      "message": "",
+      "details": null,
+      "metadata": null
+    },
+    {
+      "name": "E1-clean-empty-payload",
+      "decode": {
+        "bytesHex": ""
+      },
+      "code": 0,
+      "message": "",
+      "details": null,
+      "metadata": null
+    },
+    {
+      "name": "E2-error-basic",
+      "encode": {
+        "code": 5,
+        "message": "gone"
+      },
+      "bytesHex": "7b226572726f72223a7b22636f6465223a226e6f745f666f756e64222c226d657373616765223a22676f6e65227d7d",
+      "decode": {
+        "bytesHex": "7b226572726f72223a7b22636f6465223a226e6f745f666f756e64222c226d657373616765223a22676f6e65227d7d"
+      },
+      "code": 5,
+      "message": "gone",
+      "details": null,
+      "metadata": null
+    },
+    {
+      "name": "E3-error-with-metadata",
+      "decode": {
+        "bytesHex": "7b226572726f72223a7b22636f6465223a22696e7465726e616c222c226d657373616765223a22626f6f6d227d2c226d65746164617461223a7b22782d74726c223a5b227631225d7d7d"
+      },
+      "code": 13,
+      "message": "boom",
+      "details": null,
+      "metadata": {
+        "x-trl": [
+          "v1"
+        ]
+      }
+    },
+    {
+      "name": "E4-error-unknown-code",
+      "decode": {
+        "bytesHex": "7b226572726f72223a7b22636f6465223a226e6f7065222c226d657373616765223a226d227d7d"
+      },
+      "code": 2,
+      "message": "m",
+      "details": null,
+      "metadata": null
+    },
+    {
+      "name": "E5-error-empty-object",
+      "decode": {
+        "bytesHex": "7b226572726f72223a7b7d7d"
+      },
+      "code": 2,
+      "message": "",
+      "details": null,
+      "metadata": null
+    },
+    {
+      "name": "E6-metadata-only-clean",
+      "decode": {
+        "bytesHex": "7b226d65746164617461223a7b22782d63747261696c6572223a5b22646f6e65225d7d7d"
+      },
+      "code": 0,
+      "message": "",
+      "details": null,
+      "metadata": {
+        "x-ctrailer": [
+          "done"
+        ]
+      }
+    },
+    {
+      "name": "E7-garbage-payload-clean",
+      "decode": {
+        "bytesHex": "fffefe"
+      },
+      "code": 0,
+      "message": "",
+      "details": null,
+      "metadata": null
+    }
+  ],
+  "unaryError": [
+    {
+      "name": "U0-basic",
+      "encode": {
+        "code": 3,
+        "message": "nope"
+      },
+      "bytesHex": "7b22636f6465223a22696e76616c69645f617267756d656e74222c226d657373616765223a226e6f7065227d",
+      "decode": {
+        "code": 3,
+        "message": "nope"
+      }
+    },
+    {
+      "name": "U1-details",
+      "encode": {
+        "code": 8,
+        "message": "limited",
+        "details": [
+          {
+            "type": "type.googleapis.com/google.rpc.RetryInfo",
+            "valueHex": "010203fa"
+          }
+        ]
+      },
+      "bytesHex": "7b22636f6465223a227265736f757263655f657868617573746564222c226d657373616765223a226c696d69746564222c2264657461696c73223a5b7b2274797065223a22747970652e676f6f676c65617069732e636f6d2f676f6f676c652e7270632e5265747279496e666f222c2276616c7565223a22415149442b673d3d227d5d7d",
+      "note": "valueHex 010203fa base64url/base64 is AQID+g==; encoder may use standard base64 without padding -> AQID-g. Decoders MUST accept both standard and URL-safe alphabets, with or without padding.",
+      "decode": {
+        "code": 8,
+        "message": "limited",
+        "details": [
+          {
+            "type": "type.googleapis.com/google.rpc.RetryInfo",
+            "valueHex": "010203fa"
+          }
+        ]
+      }
+    }
+  ],
+  "trailerHeaders": [
+    {
+      "name": "T0-demux",
+      "demux": {
+        "content-type": [
+          "application/proto"
+        ],
+        "trailer-x-trl": [
+          "a"
+        ],
+        "Trailer-Y": [
+          "b",
+          "c"
+        ]
+      },
+      "headers": {
+        "content-type": [
+          "application/proto"
+        ]
+      },
+      "trailers": {
+        "x-trl": [
+          "a"
+        ],
+        "y": [
+          "b",
+          "c"
+        ]
+      }
+    },
+    {
+      "name": "T1-mux",
+      "mux": {
+        "headers": {
+          "a": [
+            "1"
+          ]
+        },
+        "trailers": {
+          "X": [
+            "2"
+          ]
+        }
+      },
+      "result": {
+        "a": [
+          "1"
+        ],
+        "trailer-x": [
+          "2"
+        ]
+      }
+    }
+  ],
+  "decodeErrorMatrix": [
+    {
+      "id": "M1",
+      "from": "endStream",
+      "bytesHex": "",
+      "code": 0,
+      "message": ""
+    },
+    {
+      "id": "M2",
+      "from": "endStream",
+      "bytesHex": "fffefe0042",
+      "code": 0,
+      "message": ""
+    },
+    {
+      "id": "M3",
+      "from": "endStream",
+      "bytesHex": "7b226572726f72223a7b7d7d",
+      "code": 2,
+      "message": ""
+    },
+    {
+      "id": "M4",
+      "from": "endStream",
+      "bytesHex": "7b226572726f72223a7b22636f6465223a226e6f7065222c226d657373616765223a226d227d7d",
+      "code": 2,
+      "message": "m"
+    },
+    {
+      "id": "M5",
+      "from": "endStream",
+      "bytesHex": "7b226572726f72223a7b22636f6465223a226e6f745f666f756e64222c226d657373616765223a226d227d2c2278223a317d",
+      "code": 5,
+      "message": "m"
+    }
+  ],
+  "comparisonContract": {
+    "frames": "byte-exact: the 5-byte envelope [flags][len32be][payload] must match exactly",
+    "jsonPayloads": "semantic: end-stream and unary-error bodies are JSON; implementations MUST parse them and compare the decoded values (JSON object key order is NOT significant)",
+    "headers": "case-insensitive map equality",
+    "codeNames": "value equality"
+  }
+}

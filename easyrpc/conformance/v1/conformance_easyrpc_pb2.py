@@ -65,3 +65,25 @@ class ConformanceServiceClient:
     async def countTrailer(self, req: m.CountTrailerRequest):
         st = await self._t.open_stream(Request(url="/easyrpc.conformance.v1.ConformanceService/CountTrailer", body=frame(req.SerializeToString())))
         return TypedStream(st, lambda b: m.CountTrailerResponse.FromString(b))
+
+    async def echoBytes(self, req: m.EchoBytesRequest) -> m.EchoBytesResponse:
+        res = await self._t.send(Request(url="/easyrpc.conformance.v1.ConformanceService/EchoBytes", body=req.SerializeToString()))
+        if res.error: raise res.error
+        self.last_trailers = res.trailers
+        return m.EchoBytesResponse.FromString(res.body)
+
+    async def sleep(self, req: m.SleepRequest) -> m.SleepResponse:
+        res = await self._t.send(Request(url="/easyrpc.conformance.v1.ConformanceService/Sleep", body=req.SerializeToString()))
+        if res.error: raise res.error
+        self.last_trailers = res.trailers
+        return m.SleepResponse.FromString(res.body)
+
+    async def empty(self, req: m.EmptyRequest) -> m.EmptyResponse:
+        res = await self._t.send(Request(url="/easyrpc.conformance.v1.ConformanceService/Empty", body=req.SerializeToString()))
+        if res.error: raise res.error
+        self.last_trailers = res.trailers
+        return m.EmptyResponse.FromString(res.body)
+
+    async def bigStream(self, req: m.BigStreamRequest):
+        st = await self._t.open_stream(Request(url="/easyrpc.conformance.v1.ConformanceService/BigStream", body=frame(req.SerializeToString())))
+        return TypedStream(st, lambda b: m.BigStreamResponse.FromString(b))

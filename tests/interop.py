@@ -7,7 +7,7 @@ from easyrpc.client_selector import default_client
 
 async def main():
     base = os.environ.get("EASY_RPC_BASE", "http://127.0.0.1:18888")
-    realm = os.environ.get("EASY_RPC_REALM", "std")
+    realm = os.environ.get("EASY_RPC_REALM") or os.environ.get("EASY_RPC_TRANSPORT") or "std"
     t = default_client(base=base, realm=realm)
     c = ConformanceServiceClient(t)
     out = await c.echo(pb.EchoRequest(input="hi"))
@@ -86,5 +86,17 @@ async def main():
     assert tidx == [0, 1], tidx
     assert st.trailers().get("x-ctrailer") == ["done"], st.trailers()
     print("python trailers ok")
+
+    # extended shapes
+    eb = await c.echoBytes(pb.EchoBytesRequest(data=b"\x00\x01\x02\xff\xfe\x80"))
+    assert bytes(eb.data) == b"\x00\x01\x02\xff\xfe\x80", eb.data
+    await c.empty(pb.EmptyRequest())
+    assert (await c.sleep(pb.SleepRequest(millis=0))).ok
+    bs = await c.bigStream(pb.BigStreamRequest(count=3, size=2048))
+    bidx = []
+    async for r in bs:
+        bidx.append(r.index)
+    assert bidx == [0, 1, 2], bidx
+    print("python extended ok")
 
 asyncio.run(main())

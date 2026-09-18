@@ -47,6 +47,10 @@ def handler():
     reg.unary["FailDetails"] = lambda req, _ctx: _fail_details(parse(pb.FailDetailsRequest, req))
     reg.stream["StreamFailDetails"] = lambda req, _ctx, emit: _stream_fail_details(parse(pb.StreamFailDetailsRequest, req), emit)
     reg.unary["EchoTrailer"] = lambda req, ctx: _echo_trailer(parse(pb.EchoTrailerRequest, req), ctx)
+    reg.unary["EchoBytes"] = lambda req, _ctx: pb.EchoBytesResponse(data=parse(pb.EchoBytesRequest, req).data).SerializeToString()
+    reg.unary["Sleep"] = lambda req, ctx: _sleep(parse(pb.SleepRequest, req), ctx.headers)
+    reg.unary["Empty"] = lambda _req, _ctx: pb.EmptyResponse().SerializeToString()
+    reg.stream["BigStream"] = lambda req, _ctx, emit: _big_stream(parse(pb.BigStreamRequest, req), emit)
     reg.stream["CountTrailer"] = lambda req, ctx, emit: _count_trailer(parse(pb.CountTrailerRequest, req), ctx, emit)
     return reg
 
@@ -56,6 +60,34 @@ def _fail(m):
     if m.message:
         raise RPCError(3, m.message)
     return pb.FailResponse(ok=True).SerializeToString()
+
+
+def _sleep(m, headers=None):
+    import time
+    # Honor the Connect deadline (M12/M13): if the deadline would elapse before
+    # the sleep completes, wait only to the deadline then fail with code 4.
+    timeout = 0
+    if headers:
+        raw = headers.get("connect-timeout-ms")
+        if isinstance(raw, (list, tuple)):
+            raw = raw[0] if raw else None
+        if raw:
+            try:
+                timeout = int(raw)
+            except ValueError:
+                timeout = 0
+    if timeout > 0 and timeout < m.millis:
+        time.sleep(timeout / 1000.0)
+        raise RPCError(4, "deadline exceeded")
+    if m.millis > 0:
+        time.sleep(m.millis / 1000.0)
+    return pb.SleepResponse(ok=True).SerializeToString()
+
+
+def _big_stream(m, emit):
+    n = m.count if m.count > 0 else 3
+    for i in range(n):
+        emit(pb.BigStreamResponse(index=i, size=m.size).SerializeToString(), False)
 
 
 def _count(m, emit):
@@ -112,6 +144,10 @@ ROUTES = {
     f"/{_SVC}/StreamFailDetails": (True, "StreamFailDetails"),
     f"/{_SVC}/EchoTrailer": (False, "EchoTrailer"),
     f"/{_SVC}/CountTrailer": (True, "CountTrailer"),
+    f"/{_SVC}/EchoBytes": (False, "EchoBytes"),
+    f"/{_SVC}/Sleep": (False, "Sleep"),
+    f"/{_SVC}/Empty": (False, "Empty"),
+    f"/{_SVC}/BigStream": (True, "BigStream"),
 }
 
 
@@ -144,7 +180,7 @@ async def handle(scope, receive, send, headers):
 
     pv = headers.get(HEADER_PROTOCOL_VERSION, "")
     if pv and pv != CONNECT_PROTOCOL_VERSION:
-        await send({"type": "http.response.start", "status": 400,
+        await send({"type": "http.response.start", "status": 501,
                     "headers": [(b"content-type", b"application/json")]})
         await send({"type": "http.response.body", "body": encode_error_json(12, f"unsupported connect-protocol-version: {pv}")})
         return
