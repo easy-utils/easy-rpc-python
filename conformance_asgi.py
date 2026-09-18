@@ -1,166 +1,188 @@
 """easy-rpc Python conformance server (ASGI). Shared app used by both the
 uvicorn (HTTP/1) and Hypercorn (h2c + HTTP/1) server entries.
 
-Implements the Connect wire directly for unary + server-stream (easy-rpc v2:
-proto only, POST only, gRPC-style paths): metadata (headers) visible to
-handlers, Connect unary errors (HTTP status + JSON body), end-stream errors
-with structured details (spec §4.1) and trailing metadata (spec §3.3).
+Thin ASGI adapter over the core `easyrpc.server.dispatch`, so the fixed
+conformance service shares the exact protocol edge semantics (POST-only 405,
+415, 404, protocol-version, request/response gzip, END frames, frame
+validation) with every other language. Implements the fixed easy-rpc v2
+service: proto only, POST only, gRPC-style paths.
 """
 import os
 
 from easyrpc import (
-    RPCError, ErrorDetail, http_status, encode_error_json, encode_end_stream,
-    frame, read_frame, gzip_compress, mux_trailers, HandlerContext,
-    CONTENT_TYPE_UNARY, CONTENT_TYPE_STREAM, HEADER_PROTOCOL_VERSION,
-    CONNECT_PROTOCOL_VERSION, DEFAULT_MAX_MESSAGE_BYTES, ENCODING_GZIP,
-    COMPRESS_MIN_BYTES,
+    MethodSpec, RPCError, ErrorDetail, HandlerContext, frame, read_frame,
 )
-from easyrpc.server import ServerRegistry
+from easyrpc.server import ServerRegistry, dispatch
 from easyrpc.conformance.v1 import conformance_pb2 as pb
 
 PORT = int(os.environ.get("PORT", "18888"))
 NAME = "conformance"
 
+_SVC = "easyrpc.conformance.v1.ConformanceService"
 
-def handler():
+# (name, is_stream) in service order.
+_RPCS = [
+    ("Health", False), ("Echo", False), ("Count", True), ("Fail", False),
+    ("StreamFail", True), ("EchoMeta", False), ("Big", False),
+    ("FailDetails", False), ("StreamFailDetails", True), ("EchoTrailer", False),
+    ("CountTrailer", True), ("EchoBytes", False), ("Sleep", False),
+    ("Empty", False), ("BigStream", True),
+]
+
+METHODS = [
+    MethodSpec(service=_SVC, name=n, path=f"/{_SVC}/{n}", client_stream=False, server_stream=s)
+    for n, s in _RPCS
+]
+
+
+def _parse(cls, raw):
+    return cls.FromString(raw)
+
+
+def _ser(msg):
+    return msg.SerializeToString()
+
+
+def build_registry() -> ServerRegistry:
     reg = ServerRegistry()
 
-    def parse(proto_class, raw):
-        return proto_class.FromString(raw)
+    async def health(_req, _ctx):
+        return _ser(pb.HealthResponse(ok=True, name=NAME))
 
-    def ser(msg):
-        return msg.SerializeToString()
+    async def echo(req, _ctx):
+        return _ser(pb.EchoResponse(output="echo:" + _parse(pb.EchoRequest, req).input))
 
-    reg.unary["Health"] = lambda _req, _ctx: ser(pb.HealthResponse(ok=True, name=NAME))
-    reg.unary["Echo"] = lambda req, _ctx: ser(
-        pb.EchoResponse(output="echo:" + parse(pb.EchoRequest, req).input)
-    )
-    reg.unary["Fail"] = lambda req, _ctx: _fail(parse(pb.FailRequest, req))
-    reg.unary["Count"] = None  # not a method
-    reg.stream["Count"] = lambda req, _ctx, emit: _count(parse(pb.CountRequest, req), emit)
-    reg.stream["StreamFail"] = lambda req, _ctx, emit: _stream_fail(parse(pb.StreamFailRequest, req), emit)
-    reg.unary["EchoMeta"] = lambda req, ctx: ser(
-        pb.EchoMetaResponse(input=parse(pb.EchoMetaRequest, req).input,
-                            meta={k: ctx.headers.get(k, [""])[0] for k in ("x-test", "authorization") if k in ctx.headers})
-    )
-    reg.unary["Big"] = lambda req, _ctx: ser(pb.BigResponse(size=parse(pb.BigRequest, req).size))
-    reg.unary["FailDetails"] = lambda req, _ctx: _fail_details(parse(pb.FailDetailsRequest, req))
-    reg.stream["StreamFailDetails"] = lambda req, _ctx, emit: _stream_fail_details(parse(pb.StreamFailDetailsRequest, req), emit)
-    reg.unary["EchoTrailer"] = lambda req, ctx: _echo_trailer(parse(pb.EchoTrailerRequest, req), ctx)
-    reg.unary["EchoBytes"] = lambda req, _ctx: pb.EchoBytesResponse(data=parse(pb.EchoBytesRequest, req).data).SerializeToString()
-    reg.unary["Sleep"] = lambda req, ctx: _sleep(parse(pb.SleepRequest, req), ctx.headers)
-    reg.unary["Empty"] = lambda _req, _ctx: pb.EmptyResponse().SerializeToString()
-    reg.stream["BigStream"] = lambda req, _ctx, emit: _big_stream(parse(pb.BigStreamRequest, req), emit)
-    reg.stream["CountTrailer"] = lambda req, ctx, emit: _count_trailer(parse(pb.CountTrailerRequest, req), ctx, emit)
-    return reg
+    async def count(req, _ctx, emit):
+        m = _parse(pb.CountRequest, req)
+        n = m.count if m.count > 0 else 3
+        for i in range(n):
+            await emit(_ser(pb.CountResponse(index=i)), False)
 
+    async def fail(req, _ctx):
+        m = _parse(pb.FailRequest, req)
+        if m.message:
+            raise RPCError(3, m.message)
+        return _ser(pb.FailResponse(ok=True))
 
-def _fail(m):
-    # The unary Fail RPC: ok unless a message was provided (then invalid_argument).
-    if m.message:
-        raise RPCError(3, m.message)
-    return pb.FailResponse(ok=True).SerializeToString()
+    async def stream_fail(req, _ctx, emit):
+        m = _parse(pb.StreamFailRequest, req)
+        for i in range(m.emit_before):
+            await emit(_ser(pb.StreamFailResponse(index=i)), False)
+        raise RPCError(m.code or 13, m.message or "boom")
 
+    async def echo_meta(req, ctx):
+        m = _parse(pb.EchoMetaRequest, req)
+        meta = {k: ctx.headers.get(k, [""])[0] for k in ("x-test", "authorization") if k in ctx.headers}
+        return _ser(pb.EchoMetaResponse(input=m.input, meta=meta))
 
-def _sleep(m, headers=None):
-    import time
-    # Honor the Connect deadline (M12/M13): if the deadline would elapse before
-    # the sleep completes, wait only to the deadline then fail with code 4.
-    timeout = 0
-    if headers:
-        raw = headers.get("connect-timeout-ms")
-        if isinstance(raw, (list, tuple)):
-            raw = raw[0] if raw else None
+    async def big(req, _ctx):
+        m = _parse(pb.BigRequest, req)
+        return _ser(pb.BigResponse(size=m.size))
+
+    async def fail_details(req, _ctx):
+        m = _parse(pb.FailDetailsRequest, req)
+        raise RPCError(m.code or 8, m.message or "limited", [_detail(m)])
+
+    async def stream_fail_details(req, _ctx, emit):
+        m = _parse(pb.StreamFailDetailsRequest, req)
+        for i in range(m.emit_before):
+            await emit(_ser(pb.StreamFailDetailsResponse(index=i)), False)
+        raise RPCError(m.code or 13, m.message or "boom", [_detail(m)])
+
+    async def echo_trailer(req, ctx):
+        m = _parse(pb.EchoTrailerRequest, req)
+        ctx.set_trailer("x-trl", "unary-" + m.input)
+        return _ser(pb.EchoTrailerResponse(output="trailer:" + m.input))
+
+    async def count_trailer(req, ctx, emit):
+        ctx.set_trailer("x-ctrailer", "done")
+        m = _parse(pb.CountTrailerRequest, req)
+        n = m.count if m.count > 0 else 3
+        for i in range(n):
+            await emit(_ser(pb.CountTrailerResponse(index=i)), False)
+
+    async def echo_bytes(req, _ctx):
+        m = _parse(pb.EchoBytesRequest, req)
+        return _ser(pb.EchoBytesResponse(data=m.data))
+
+    async def sleep(req, ctx):
+        import asyncio
+        m = _parse(pb.SleepRequest, req)
+        # Honor the Connect deadline (M12/M13): if the deadline would elapse
+        # before the sleep completes, wait only to the deadline then fail 4.
+        timeout = 0
+        raw = ctx.headers.get("connect-timeout-ms")
         if raw:
+            raw = raw[0] if isinstance(raw, (list, tuple)) else raw
             try:
                 timeout = int(raw)
             except ValueError:
                 timeout = 0
-    if timeout > 0 and timeout < m.millis:
-        time.sleep(timeout / 1000.0)
-        raise RPCError(4, "deadline exceeded")
-    if m.millis > 0:
-        time.sleep(m.millis / 1000.0)
-    return pb.SleepResponse(ok=True).SerializeToString()
+        if timeout > 0 and timeout < m.millis:
+            await asyncio.sleep(timeout / 1000.0)
+            raise RPCError(4, "deadline exceeded")
+        if m.millis > 0:
+            await asyncio.sleep(m.millis / 1000.0)
+        return _ser(pb.SleepResponse(ok=True))
 
+    async def empty(_req, _ctx):
+        return _ser(pb.EmptyResponse())
 
-def _big_stream(m, emit):
-    n = m.count if m.count > 0 else 3
-    for i in range(n):
-        emit(pb.BigStreamResponse(index=i, size=m.size).SerializeToString(), False)
+    async def big_stream(req, _ctx, emit):
+        m = _parse(pb.BigStreamRequest, req)
+        n = m.count if m.count > 0 else 3
+        for i in range(n):
+            await emit(_ser(pb.BigStreamResponse(index=i, size=m.size)), False)
 
-
-def _count(m, emit):
-    n = m.count if m.count > 0 else 3
-    for i in range(n):
-        emit(pb.CountResponse(index=i).SerializeToString(), False)
-
-
-def _count_trailer(m, ctx, emit):
-    ctx.set_trailer("x-ctrailer", "done")
-    n = m.count if m.count > 0 else 3
-    for i in range(n):
-        emit(pb.CountTrailerResponse(index=i).SerializeToString(), False)
-
-
-def _echo_trailer(m, ctx):
-    ctx.set_trailer("x-trl", "unary-" + m.input)
-    return pb.EchoTrailerResponse(output="trailer:" + m.input).SerializeToString()
+    reg.unary["Health"] = health
+    reg.unary["Echo"] = echo
+    reg.stream["Count"] = count
+    reg.unary["Fail"] = fail
+    reg.stream["StreamFail"] = stream_fail
+    reg.unary["EchoMeta"] = echo_meta
+    reg.unary["Big"] = big
+    reg.unary["FailDetails"] = fail_details
+    reg.stream["StreamFailDetails"] = stream_fail_details
+    reg.unary["EchoTrailer"] = echo_trailer
+    reg.stream["CountTrailer"] = count_trailer
+    reg.unary["EchoBytes"] = echo_bytes
+    reg.unary["Sleep"] = sleep
+    reg.unary["Empty"] = empty
+    reg.stream["BigStream"] = big_stream
+    return reg
 
 
 def _detail(m):
     return ErrorDetail(m.detail_type or "t/x", (m.detail_text or "d").encode())
 
 
-def _fail_details(m):
-    raise RPCError(m.code or 8, m.message or "limited", [_detail(m)])
+REG = build_registry()
+
+# Legacy route table (path -> (is_stream, name)); kept for compatibility.
+ROUTES = {m.path: (m.server_stream, m.name) for m in METHODS}
 
 
-def _stream_fail(m, emit):
-    for i in range(m.emit_before):
-        emit(pb.StreamFailResponse(index=i).SerializeToString(), False)
-    raise RPCError(m.code or 13, m.message or "boom")
+class _AsgiWriter:
+    """ASGI ResponseWriter: buffers frames, emits one response body. ASGI does
+    not expose per-frame flush portably, so this buffers — the raw-wire oracle
+    checks bytes, not timing, for this fixture."""
 
+    def __init__(self):
+        self.status_code = 200
+        self.headers = []
+        self.chunks = []
 
-def _stream_fail_details(m, emit):
-    for i in range(m.emit_before):
-        emit(pb.StreamFailDetailsResponse(index=i).SerializeToString(), False)
-    raise RPCError(m.code or 13, m.message or "boom", [_detail(m)])
+    def status(self, code):
+        self.status_code = code
 
+    def header(self, name, value):
+        self.headers.append((name.lower().encode(), str(value).encode()))
 
-REG = handler()
-
-# gRPC-style paths (easy-rpc v2): path -> (is_stream, method name).
-_SVC = "easyrpc.conformance.v1.ConformanceService"
-ROUTES = {
-    f"/{_SVC}/Health": (False, "Health"),
-    f"/{_SVC}/Echo": (False, "Echo"),
-    f"/{_SVC}/Count": (True, "Count"),
-    f"/{_SVC}/Fail": (False, "Fail"),
-    f"/{_SVC}/StreamFail": (True, "StreamFail"),
-    f"/{_SVC}/EchoMeta": (False, "EchoMeta"),
-    f"/{_SVC}/Big": (False, "Big"),
-    f"/{_SVC}/FailDetails": (False, "FailDetails"),
-    f"/{_SVC}/StreamFailDetails": (True, "StreamFailDetails"),
-    f"/{_SVC}/EchoTrailer": (False, "EchoTrailer"),
-    f"/{_SVC}/CountTrailer": (True, "CountTrailer"),
-    f"/{_SVC}/EchoBytes": (False, "EchoBytes"),
-    f"/{_SVC}/Sleep": (False, "Sleep"),
-    f"/{_SVC}/Empty": (False, "Empty"),
-    f"/{_SVC}/BigStream": (True, "BigStream"),
-}
+    async def write_frame(self, payload):
+        self.chunks.append(bytes(payload))
 
 
 async def handle(scope, receive, send, headers):
-    path = scope["path"]
-    msg = ROUTES.get(path)
-    if msg is None:
-        await send({"type": "http.response.start", "status": 404, "headers": []})
-        await send({"type": "http.response.body", "body": b""})
-        return
-
-    is_stream, name = msg
-
     body = b""
     while True:
         event = await receive()
@@ -169,98 +191,32 @@ async def handle(scope, receive, send, headers):
             if not event.get("more_body", False):
                 break
 
-    # proto-only content type.
-    ct = headers.get("content-type", "").split(";", 1)[0].strip().lower()
-    want = CONTENT_TYPE_STREAM if is_stream else CONTENT_TYPE_UNARY
-    if ct != want:
-        await send({"type": "http.response.start", "status": 415,
-                    "headers": [(b"content-type", b"application/json")]})
-        await send({"type": "http.response.body", "body": encode_error_json(3, f"unsupported content-type: expected {want}")})
-        return
+    # Normalize to the multi-value header shape the core expects.
+    multi = {k: [v] for k, v in headers.items()}
+    method = scope.get("method", "POST")
+    multi.setdefault(":method", [method])
 
-    pv = headers.get(HEADER_PROTOCOL_VERSION, "")
-    if pv and pv != CONNECT_PROTOCOL_VERSION:
-        await send({"type": "http.response.start", "status": 501,
-                    "headers": [(b"content-type", b"application/json")]})
-        await send({"type": "http.response.body", "body": encode_error_json(12, f"unsupported connect-protocol-version: {pv}")})
-        return
-    if len(body) > DEFAULT_MAX_MESSAGE_BYTES:
-        await send({"type": "http.response.start", "status": 500,
-                    "headers": [(b"content-type", b"application/json")]})
-        await send({"type": "http.response.body", "body": encode_error_json(8, "request too large")})
-        return
-
-    ctx = HandlerContext(headers={k: [v] for k, v in headers.items()})
-
-    if is_stream:
-        h = REG.stream.get(name)
-        if h is None:
-            await send({"type": "http.response.start", "status": 404, "headers": []})
-            await send({"type": "http.response.body", "body": b""})
-            return
-        # Unframe the enveloped single-request frame.
-        step = read_frame(body)
-        if step is None:
-            await send({"type": "http.response.start", "status": 200,
-                        "headers": [(b"content-type", CONTENT_TYPE_STREAM.encode())]})
-            await send({"type": "http.response.body", "body": frame(encode_end_stream(13, "stream request: truncated frame"), True)})
-            return
-        req_body = step[0]
-        chunks: list = []
-        err = None
-
-        def emit(payload: bytes, end: bool) -> None:
-            if not end:
-                chunks.append(frame(payload, False))
-
-        try:
-            h(req_body, ctx, emit)
-        except RPCError as e:
-            err = e
-        except Exception as e:  # noqa: BLE001
-            err = RPCError(13, str(e))
-        if err is not None:
-            end_payload = encode_end_stream(err.code, err.message, err.details, ctx.trailers)
-        else:
-            end_payload = encode_end_stream(0, "", None, ctx.trailers)
-        out = b"".join(chunks) + frame(end_payload, True)
-        await send({"type": "http.response.start", "status": 200,
-                    "headers": [(b"content-type", CONTENT_TYPE_STREAM.encode())]})
-        await send({"type": "http.response.body", "body": out})
-        return
-
-    h = REG.unary.get(name)
-    if h is None:
-        await send({"type": "http.response.start", "status": 404, "headers": []})
-        await send({"type": "http.response.body", "body": b""})
-        return
-    try:
-        out = h(body, ctx)
-        # Unary gzip when the client accepts it.
-        extra = []
-        accept = headers.get("accept-encoding", "")
-        if ENCODING_GZIP in [x.strip() for x in accept.split(",")] and len(out) >= COMPRESS_MIN_BYTES:
-            out = gzip_compress(out)
-            extra.append((b"content-encoding", b"gzip"))
-        for k, v in mux_trailers({}, ctx.trailers).items():
-            extra.append((k.encode(), (v[0] if isinstance(v, (list, tuple)) else v).encode()))
-        await send({"type": "http.response.start", "status": 200,
-                    "headers": [(b"content-type", CONTENT_TYPE_UNARY.encode())] + extra})
-        await send({"type": "http.response.body", "body": out})
-    except RPCError as e:
-        hdrs = [(b"content-type", b"application/json"),
-                (b"connect-code", str(e.code).encode()),
-                (b"connect-error", e.message.encode())]
-        for k, v in mux_trailers({}, ctx.trailers).items():
-            hdrs.append((k.encode(), (v[0] if isinstance(v, (list, tuple)) else v).encode()))
-        await send({"type": "http.response.start", "status": http_status(e.code), "headers": hdrs})
-        await send({"type": "http.response.body", "body": encode_error_json(e.code, e.message, e.details)})
-    except Exception as e:  # noqa: BLE001
-        await send({"type": "http.response.start", "status": 500, "headers": [(b"content-type", b"application/json")]})
-        await send({"type": "http.response.body", "body": encode_error_json(13, str(e))})
+    from easyrpc import Request
+    writer = _AsgiWriter()
+    await dispatch(Request(url=scope["path"], headers=multi, body=body), METHODS, REG, writer)
+    await send({"type": "http.response.start", "status": writer.status_code, "headers": writer.headers})
+    await send({"type": "http.response.body", "body": b"".join(writer.chunks)})
 
 
 async def asgi_app(scope, receive, send):
+    if scope["type"] == "lifespan":
+        # Minimal ASGI lifespan: acknowledge startup/shutdown so Hypercorn
+        # (which otherwise waits for a startup event) can serve.
+        while True:
+            event = await receive()
+            if event["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif event["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+        return
+    if scope["type"] != "http":
+        return
     headers = {}
     for k, v in scope.get("headers", []):
         key = k.decode("latin1").lower()
