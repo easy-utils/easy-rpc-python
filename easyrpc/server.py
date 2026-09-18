@@ -66,32 +66,67 @@ async def dispatch(
     pv = req.headers.get(HEADER_PROTOCOL_VERSION, [""])[0]
     if pv and pv != CONNECT_PROTOCOL_VERSION:
         return await _write_error(w, RPCError(12, f"unsupported connect-protocol-version: {pv}"))
+
+    # POST-only (spec §0). A non-POST verb is 405 (code 2).
+    verb = req.headers.get(":method", [""])[0]
+    if verb and verb != "POST":
+        return await _write_error(w, RPCError(2, f"method {verb} not allowed"), status=405)
+
     if len(req.body or b"") > DEFAULT_MAX_MESSAGE_BYTES:
         return await _write_error(w, RPCError(8, "request too large"))
 
     spec = next((m for m in methods if m.path == path), None)
+    # Unknown path -> 404 with code 12 (unimplemented), matching Connect.
     if spec is None:
-        return await _write_error(w, RPCError(5, "not found"))
+        return await _write_error(w, RPCError(12, "unimplemented"), status=404)
 
-    # proto-only content type (spec §2).
+    # proto-only content type (spec §2). Unknown content type -> 415 (code 2).
     want = CONTENT_TYPE_STREAM if spec.server_stream else CONTENT_TYPE_UNARY
     got = ct.split(";", 1)[0].strip().lower()
     if got != want:
-        return await _write_error(w, RPCError(3, f"unsupported content-type: expected {want}"), status=415)
+        return await _write_error(w, RPCError(2, f"unsupported content-type: expected {want}"), status=415)
 
     ctx = HandlerContext(headers={k: list(v) for k, v in req.headers.items()})
 
     if spec.server_stream:
         h = reg.stream.get(spec.name)
         if h is None:
-            return await _write_error(w, RPCError(5, "no handler"))
+            return await _stream_fail(w, RPCError(12, "no handler"))
+        # Request compression for streams uses `connect-content-encoding`.
+        req_enc = req.headers.get("connect-content-encoding", [""])[0].strip().lower()
+        if req_enc and req_enc != "identity" and req_enc != ENCODING_GZIP:
+            return await _stream_fail(w, RPCError(12, f"unsupported content-encoding: {req_enc}"))
+        # A server-stream request MUST carry exactly one enveloped message;
+        # zero frames or more than one => unimplemented (Connect semantics).
+        try:
+            frame_count = _count_frames(req.body or b"")
+        except RPCError as e:
+            return await _stream_fail(w, e)
+        if frame_count != 1:
+            msg = "missing request message" if frame_count == 0 else \
+                "server-stream request must contain exactly one message"
+            return await _stream_fail(w, RPCError(12, msg))
         try:
             body = _read_single_frame(req.body or b"")
         except RPCError as e:
-            return await _write_error(w, e)
+            return await _stream_fail(w, e)
+        # Connect semantics: stream is always HTTP 200; failures ride the END
+        # frame. Handler headers are applied lazily on the first emit.
         w.status(200)
         w.header("content-type", CONTENT_TYPE_STREAM)
         ended = False
+        headers_applied = False
+
+        def apply_headers() -> None:
+            nonlocal headers_applied
+            if headers_applied:
+                return
+            headers_applied = True
+            for k, vs in ctx.response_headers.items():
+                if k == "content-type":
+                    continue
+                for v in vs:
+                    w.header(k, v)
 
         wants_gzip = any(
             ENCODING_GZIP in [x.strip() for x in v.split(",")]
@@ -102,6 +137,7 @@ async def dispatch(
             nonlocal ended
             if ended:
                 return
+            apply_headers()
             if end:
                 ended = True
                 await w.write_frame(frame(encode_end_stream(0, "", None, ctx.trailers), True))
@@ -115,10 +151,12 @@ async def dispatch(
             await h(body, ctx, emit)
         except Exception as e:  # noqa: BLE001
             err = e if isinstance(e, RPCError) else RPCError(13, str(e))
+            apply_headers()
             if not ended:
                 ended = True
                 await w.write_frame(frame(encode_end_stream(err.code, err.message, err.details, ctx.trailers), True))
             return
+        apply_headers()
         if not ended:
             await w.write_frame(frame(encode_end_stream(0, "", None, ctx.trailers), True))
         return
@@ -126,11 +164,21 @@ async def dispatch(
     h = reg.unary.get(spec.name)
     if h is None:
         return await _write_error(w, RPCError(5, "no handler"))
+    # Request compression (spec §3.5): unary uses `Content-Encoding: gzip`.
+    in_body = req.body or b""
+    req_enc = req.headers.get(HEADER_CONTENT_ENCODING, [""])[0].strip().lower()
+    if req_enc and req_enc != ENCODING_GZIP:
+        return await _write_error(w, RPCError(12, f"unsupported content-encoding: {req_enc}"))
+    if req_enc == ENCODING_GZIP and in_body:
+        try:
+            in_body = gzip_decompress(in_body)
+        except RPCError as e:
+            return await _write_error(w, e)
     try:
-        out = await h(req.body or b"", ctx)
+        out = await h(in_body, ctx)
     except Exception as e:  # noqa: BLE001
         err = e if isinstance(e, RPCError) else RPCError(13, str(e))
-        return await _write_error(w, err, trailers=ctx.trailers)
+        return await _write_error(w, err, trailers=ctx.trailers, extra=ctx.response_headers)
     w.status(200)
     # Unary gzip (spec §3.5): compress when the client accepts gzip.
     wants_gzip = any(
@@ -141,20 +189,56 @@ async def dispatch(
     if wants_gzip and len(out) >= COMPRESS_MIN_BYTES:
         out = gzip_compress(out)
         headers[HEADER_CONTENT_ENCODING] = ENCODING_GZIP
+    for k, vs in ctx.response_headers.items():
+        if k == "content-type":
+            continue
+        for v in vs:
+            w.header(k, v)
     w.header("content-type", headers["content-type"])
     if HEADER_CONTENT_ENCODING in headers:
         w.header(HEADER_CONTENT_ENCODING, ENCODING_GZIP)
     for k, v in mux_trailers({}, ctx.trailers).items():
-        if k != "content-type":
-            w.header(k, v[0] if isinstance(v, (list, tuple)) else v)
+        if k == "content-type":
+            continue
+        for item in (v if isinstance(v, (list, tuple)) else [v]):
+            w.header(k, item)
     await w.write_frame(out)
 
 
-async def _write_error(w: ResponseWriter, err: RPCError, status: int = None, trailers: dict = None) -> None:
+async def _write_error(w: ResponseWriter, err: RPCError, status: int = None, trailers: dict = None,
+                       extra: dict = None) -> None:
     w.status(status if status is not None else http_status(err.code))
-    for k, v in mux_trailers({"content-type": "application/json"}, trailers or {}).items():
-        w.header(k, v[0] if isinstance(v, (list, tuple)) else v)
+    for k, vs in (extra or {}).items():
+        if k == "content-type":
+            continue
+        for v in vs:
+            w.header(k, v)
+    w.header("content-type", "application/json")
+    for k, v in mux_trailers({}, trailers or {}).items():
+        for item in (v if isinstance(v, (list, tuple)) else [v]):
+            w.header(k, item)
     await w.write_frame(encode_error_json(err.code, err.message, err.details))
+
+
+async def _stream_fail(w: ResponseWriter, err: RPCError) -> None:
+    """Server-stream failure: HTTP 200 + END frame carrying the error."""
+    w.status(200)
+    w.header("content-type", CONTENT_TYPE_STREAM)
+    await w.write_frame(frame(encode_end_stream(err.code, err.message, err.details), True))
+
+
+def _count_frames(body: bytes) -> int:
+    off = 0
+    n = 0
+    while off < len(body):
+        if off + 5 > len(body):
+            raise RPCError(13, "truncated frame header")
+        length = int.from_bytes(body[off + 1:off + 5], "big")
+        if length > DEFAULT_MAX_MESSAGE_BYTES:
+            raise RPCError(8, f"frame too large: {length}")
+        off += 5 + length
+        n += 1
+    return n
 
 
 # ---- aiohttp adapter ----

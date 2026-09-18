@@ -115,15 +115,28 @@ def code_from_string(name: str) -> int:
     return CODE_BY_NAME.get(name, 2)
 
 
-def _wire_details(details) -> list:
+def _b64_encode_raw(data: bytes) -> str:
+    """Standard-alphabet base64 with no padding (Connect error-detail value)."""
     import base64
-    return [{"type": d.type_, "value": base64.b64encode(bytes(d.value)).decode("ascii")} for d in (details or [])]
+    return base64.b64encode(data).decode("ascii").rstrip("=")
+
+
+def _b64_decode_lenient(s: str) -> bytes:
+    """Accept both padded and unpadded standard base64 (length%4 == 1 invalid)."""
+    import base64
+    t = s.rstrip("=")
+    if len(t) % 4 == 1:
+        raise ValueError("invalid base64 length")
+    return base64.b64decode(t + "=" * (-len(t) % 4), validate=True)
+
+
+def _wire_details(details) -> list:
+    return [{"type": d.type_, "value": _b64_encode_raw(bytes(d.value))} for d in (details or [])]
 
 
 def _parse_wire_details(v) -> list:
     """Parse the JSON details array; malformed entries are skipped, never
     fatal (matrix M7)."""
-    import base64
     if not isinstance(v, list):
         return []
     out = []
@@ -134,7 +147,7 @@ def _parse_wire_details(v) -> list:
         if not isinstance(t, str) or not t or not isinstance(val, str) or not val:
             continue
         try:
-            out.append(ErrorDetail(t, base64.b64decode(val, validate=True)))
+            out.append(ErrorDetail(t, _b64_decode_lenient(val)))
         except Exception:
             continue
     return out
@@ -222,8 +235,12 @@ def gzip_compress(data: bytes) -> bytes:
 
 def gzip_decompress(data: bytes) -> bytes:
     """gzip-decompress a flagged frame payload. Raises RPCError(13) on corrupt
-    input (fault matrix M10): never silently yield raw compressed bytes."""
+    input (fault matrix M10): never silently yield raw compressed bytes. An
+    empty payload with the compressed flag set is a protocol error — a gzip
+    member always has a header, so a zero-length input must be rejected."""
     import gzip as _g
+    if not data:
+        raise RPCError(13, "corrupt gzip frame: empty input")
     try:
         return _g.decompress(data)
     except Exception as e:  # noqa: BLE001
@@ -303,9 +320,14 @@ def demux_trailers(all_headers: dict) -> tuple:
 
 @dataclass
 class HandlerContext:
-    """Per-RPC context: request metadata + a trailing-metadata channel."""
+    """Per-RPC context: request metadata + response header/trailer channels
+    (both append-semantics multi-maps, spec §3.3)."""
     headers: Dict[str, List[str]] = field(default_factory=dict)
     trailers: Dict[str, List[str]] = field(default_factory=dict)
+    response_headers: Dict[str, List[str]] = field(default_factory=dict)
+
+    def set_header(self, key: str, value: str) -> None:
+        self.response_headers.setdefault(key.lower(), []).append(value)
 
     def set_trailer(self, key: str, value: str) -> None:
         self.trailers.setdefault(key, []).append(value)
