@@ -16,6 +16,7 @@ from . import (
     HEADER_PROTOCOL_VERSION, CONNECT_PROTOCOL_VERSION, DEFAULT_MAX_MESSAGE_BYTES,
     ENCODING_GZIP, COMPRESS_MIN_BYTES, gzip_compress,
     HandlerContext, mux_trailers, gzip_decompress,
+    content_kind_of, is_stream_content_type, content_type_for,
 )
 
 CONTENT_TYPE_UNARY = "application/proto"
@@ -80,40 +81,41 @@ async def dispatch(
     if spec is None:
         return await _write_error(w, RPCError(12, "unimplemented"), status=404)
 
-    # proto-only content type (spec §2). Unknown content type -> 415 (code 2).
-    want = CONTENT_TYPE_STREAM if spec.server_stream else CONTENT_TYPE_UNARY
-    got = ct.split(";", 1)[0].strip().lower()
-    if got != want:
-        return await _write_error(w, RPCError(2, f"unsupported content-type: expected {want}"), status=415)
+    # codec + shape negotiation (spec §2): proto (default) or proto3 JSON; the
+    # content type also encodes the shape, which must match the method.
+    kind = content_kind_of(ct)
+    stream_shape = is_stream_content_type(ct)
+    if not kind or stream_shape != spec.server_stream:
+        return await _write_error(w, RPCError(2, f"unsupported content-type: {ct}"), status=415)
 
-    ctx = HandlerContext(headers={k: list(v) for k, v in req.headers.items()})
+    ctx = HandlerContext(headers={k: list(v) for k, v in req.headers.items()}, kind=kind)
 
     if spec.server_stream:
         h = reg.stream.get(spec.name)
         if h is None:
-            return await _stream_fail(w, RPCError(12, "no handler"))
+            return await _stream_fail(w, RPCError(12, "no handler"), kind)
         # Request compression for streams uses `connect-content-encoding`.
         req_enc = req.headers.get("connect-content-encoding", [""])[0].strip().lower()
         if req_enc and req_enc != "identity" and req_enc != ENCODING_GZIP:
-            return await _stream_fail(w, RPCError(12, f"unsupported content-encoding: {req_enc}"))
+            return await _stream_fail(w, RPCError(12, f"unsupported content-encoding: {req_enc}"), kind)
         # A server-stream request MUST carry exactly one enveloped message;
         # zero frames or more than one => unimplemented (Connect semantics).
         try:
             frame_count = _count_frames(req.body or b"")
         except RPCError as e:
-            return await _stream_fail(w, e)
+            return await _stream_fail(w, e, kind)
         if frame_count != 1:
             msg = "missing request message" if frame_count == 0 else \
                 "server-stream request must contain exactly one message"
-            return await _stream_fail(w, RPCError(12, msg))
+            return await _stream_fail(w, RPCError(12, msg), kind)
         try:
             body = _read_single_frame(req.body or b"")
         except RPCError as e:
-            return await _stream_fail(w, e)
+            return await _stream_fail(w, e, kind)
         # Connect semantics: stream is always HTTP 200; failures ride the END
         # frame. Handler headers are applied lazily on the first emit.
         w.status(200)
-        w.header("content-type", CONTENT_TYPE_STREAM)
+        w.header("content-type", content_type_for(True, kind))
         ended = False
         headers_applied = False
 
@@ -185,7 +187,7 @@ async def dispatch(
         ENCODING_GZIP in [x.strip() for x in v.split(",")]
         for v in req.headers.get(HEADER_ACCEPT_ENCODING, [])
     )
-    headers = {"content-type": CONTENT_TYPE_UNARY}
+    headers = {"content-type": content_type_for(False, kind)}
     if wants_gzip and len(out) >= COMPRESS_MIN_BYTES:
         out = gzip_compress(out)
         headers[HEADER_CONTENT_ENCODING] = ENCODING_GZIP
@@ -220,10 +222,10 @@ async def _write_error(w: ResponseWriter, err: RPCError, status: int = None, tra
     await w.write_frame(encode_error_json(err.code, err.message, err.details))
 
 
-async def _stream_fail(w: ResponseWriter, err: RPCError) -> None:
+async def _stream_fail(w: ResponseWriter, err: RPCError, kind: str = "proto") -> None:
     """Server-stream failure: HTTP 200 + END frame carrying the error."""
     w.status(200)
-    w.header("content-type", CONTENT_TYPE_STREAM)
+    w.header("content-type", content_type_for(True, kind))
     await w.write_frame(frame(encode_end_stream(err.code, err.message, err.details), True))
 
 

@@ -271,6 +271,46 @@ CONNECT_PROTOCOL_VERSION = "1"
 DEFAULT_MAX_MESSAGE_BYTES = 4 * 1024 * 1024
 CONTENT_TYPE_UNARY = "application/proto"
 CONTENT_TYPE_STREAM = "application/connect+proto"
+CONTENT_TYPE_UNARY_JSON = "application/json"
+CONTENT_TYPE_STREAM_JSON = "application/connect+json"
+
+
+def content_kind_of(content_type: str) -> str:
+    """Map a Content-Type to 'proto' | 'json', or '' when unsupported."""
+    ct = (content_type or "").split(";", 1)[0].strip().lower()
+    if ct in ("application/proto", "application/connect+proto"):
+        return "proto"
+    if ct in ("application/json", "application/connect+json"):
+        return "json"
+    return ""
+
+
+def is_stream_content_type(content_type: str) -> bool:
+    ct = (content_type or "").split(";", 1)[0].strip().lower()
+    return ct in ("application/connect+proto", "application/connect+json")
+
+
+def content_type_for(server_stream: bool, kind: str) -> str:
+    if kind == "json":
+        return CONTENT_TYPE_STREAM_JSON if server_stream else CONTENT_TYPE_UNARY_JSON
+    return CONTENT_TYPE_STREAM if server_stream else CONTENT_TYPE_UNARY
+
+
+def encode_msg(msg, kind: str) -> bytes:
+    """Encode a protobuf message in the given codec."""
+    if kind == "json":
+        from google.protobuf import json_format
+        return json_format.MessageToJson(msg, preserving_proto_field_name=False).encode("utf-8")
+    return msg.SerializeToString()
+
+
+def decode_msg(data: bytes, cls, kind: str):
+    """Decode bytes into a protobuf message class in the given codec. JSON
+    ignores unknown fields (matching Connect / protojson)."""
+    if kind == "json":
+        from google.protobuf import json_format
+        return json_format.Parse(data, cls(), ignore_unknown_fields=True)
+    return cls.FromString(data)
 
 
 def parse_timeout(value) -> int:
@@ -325,6 +365,9 @@ class HandlerContext:
     headers: Dict[str, List[str]] = field(default_factory=dict)
     trailers: Dict[str, List[str]] = field(default_factory=dict)
     response_headers: Dict[str, List[str]] = field(default_factory=dict)
+    # Message codec the request arrived with; generated adapters decode/encode
+    # accordingly.
+    kind: str = "proto"
 
     def set_header(self, key: str, value: str) -> None:
         self.response_headers.setdefault(key.lower(), []).append(value)

@@ -35,81 +35,82 @@ METHODS = [
 ]
 
 
-def _parse(cls, raw):
-    return cls.FromString(raw)
+from easyrpc import decode_msg, encode_msg
 
 
-def _ser(msg):
-    return msg.SerializeToString()
+def _parse(cls, raw, ctx=None):
+    return decode_msg(raw, cls, ctx.kind if ctx is not None else "proto")
+
+
+def _ser(msg, ctx=None):
+    return encode_msg(msg, ctx.kind if ctx is not None else "proto")
 
 
 def build_registry() -> ServerRegistry:
     reg = ServerRegistry()
 
-    async def health(_req, _ctx):
-        return _ser(pb.HealthResponse(ok=True, name=NAME))
+    async def health(_req, ctx):
+        return _ser(pb.HealthResponse(ok=True, name=NAME), ctx)
 
-    async def echo(req, _ctx):
-        return _ser(pb.EchoResponse(output="echo:" + _parse(pb.EchoRequest, req).input))
+    async def echo(req, ctx):
+        return _ser(pb.EchoResponse(output="echo:" + _parse(pb.EchoRequest, req, ctx).input), ctx)
 
-    async def count(req, _ctx, emit):
-        m = _parse(pb.CountRequest, req)
+    async def count(req, ctx, emit):
+        m = _parse(pb.CountRequest, req, ctx)
         n = m.count if m.count > 0 else 3
         for i in range(n):
-            await emit(_ser(pb.CountResponse(index=i)), False)
+            await emit(_ser(pb.CountResponse(index=i), ctx), False)
 
-    async def fail(req, _ctx):
-        m = _parse(pb.FailRequest, req)
+    async def fail(req, ctx):
+        m = _parse(pb.FailRequest, req, ctx)
         if m.message:
             raise RPCError(3, m.message)
-        return _ser(pb.FailResponse(ok=True))
+        return _ser(pb.FailResponse(ok=True), ctx)
 
-    async def stream_fail(req, _ctx, emit):
-        m = _parse(pb.StreamFailRequest, req)
+    async def stream_fail(req, ctx, emit):
+        m = _parse(pb.StreamFailRequest, req, ctx)
         for i in range(m.emit_before):
-            await emit(_ser(pb.StreamFailResponse(index=i)), False)
+            await emit(_ser(pb.StreamFailResponse(index=i), ctx), False)
         raise RPCError(m.code or 13, m.message or "boom")
 
     async def echo_meta(req, ctx):
-        m = _parse(pb.EchoMetaRequest, req)
+        m = _parse(pb.EchoMetaRequest, req, ctx)
         meta = {k: ctx.headers.get(k, [""])[0] for k in ("x-test", "authorization") if k in ctx.headers}
-        return _ser(pb.EchoMetaResponse(input=m.input, meta=meta))
+        return _ser(pb.EchoMetaResponse(input=m.input, meta=meta), ctx)
 
-    async def big(req, _ctx):
-        m = _parse(pb.BigRequest, req)
-        return _ser(pb.BigResponse(size=m.size))
+    async def big(req, ctx):
+        m = _parse(pb.BigRequest, req, ctx)
+        return _ser(pb.BigResponse(size=m.size), ctx)
 
-    async def fail_details(req, _ctx):
-        m = _parse(pb.FailDetailsRequest, req)
+    async def fail_details(req, ctx):
+        m = _parse(pb.FailDetailsRequest, req, ctx)
         raise RPCError(m.code or 8, m.message or "limited", [_detail(m)])
 
-    async def stream_fail_details(req, _ctx, emit):
-        m = _parse(pb.StreamFailDetailsRequest, req)
+    async def stream_fail_details(req, ctx, emit):
+        m = _parse(pb.StreamFailDetailsRequest, req, ctx)
         for i in range(m.emit_before):
-            await emit(_ser(pb.StreamFailDetailsResponse(index=i)), False)
+            await emit(_ser(pb.StreamFailDetailsResponse(index=i), ctx), False)
         raise RPCError(m.code or 13, m.message or "boom", [_detail(m)])
 
     async def echo_trailer(req, ctx):
-        m = _parse(pb.EchoTrailerRequest, req)
+        m = _parse(pb.EchoTrailerRequest, req, ctx)
         ctx.set_trailer("x-trl", "unary-" + m.input)
-        return _ser(pb.EchoTrailerResponse(output="trailer:" + m.input))
+        return _ser(pb.EchoTrailerResponse(output="trailer:" + m.input), ctx)
 
     async def count_trailer(req, ctx, emit):
         ctx.set_trailer("x-ctrailer", "done")
-        m = _parse(pb.CountTrailerRequest, req)
+        m = _parse(pb.CountTrailerRequest, req, ctx)
         n = m.count if m.count > 0 else 3
         for i in range(n):
-            await emit(_ser(pb.CountTrailerResponse(index=i)), False)
+            await emit(_ser(pb.CountTrailerResponse(index=i), ctx), False)
 
-    async def echo_bytes(req, _ctx):
-        m = _parse(pb.EchoBytesRequest, req)
-        return _ser(pb.EchoBytesResponse(data=m.data))
+    async def echo_bytes(req, ctx):
+        m = _parse(pb.EchoBytesRequest, req, ctx)
+        return _ser(pb.EchoBytesResponse(data=m.data), ctx)
 
     async def sleep(req, ctx):
         import asyncio
-        m = _parse(pb.SleepRequest, req)
-        # Honor the Connect deadline (M12/M13): if the deadline would elapse
-        # before the sleep completes, wait only to the deadline then fail 4.
+        m = _parse(pb.SleepRequest, req, ctx)
         timeout = 0
         raw = ctx.headers.get("connect-timeout-ms")
         if raw:
@@ -123,16 +124,16 @@ def build_registry() -> ServerRegistry:
             raise RPCError(4, "deadline exceeded")
         if m.millis > 0:
             await asyncio.sleep(m.millis / 1000.0)
-        return _ser(pb.SleepResponse(ok=True))
+        return _ser(pb.SleepResponse(ok=True), ctx)
 
-    async def empty(_req, _ctx):
-        return _ser(pb.EmptyResponse())
+    async def empty(_req, ctx):
+        return _ser(pb.EmptyResponse(), ctx)
 
-    async def big_stream(req, _ctx, emit):
-        m = _parse(pb.BigStreamRequest, req)
+    async def big_stream(req, ctx, emit):
+        m = _parse(pb.BigStreamRequest, req, ctx)
         n = m.count if m.count > 0 else 3
         for i in range(n):
-            await emit(_ser(pb.BigStreamResponse(index=i, size=m.size)), False)
+            await emit(_ser(pb.BigStreamResponse(index=i, size=m.size), ctx), False)
 
     reg.unary["Health"] = health
     reg.unary["Echo"] = echo
