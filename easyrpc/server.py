@@ -134,6 +134,8 @@ async def dispatch(
             ENCODING_GZIP in [x.strip() for x in v.split(",")]
             for v in req.headers.get(HEADER_STREAM_ACCEPT_ENCODING, [])
         )
+        if wants_gzip:
+            w.header("connect-content-encoding", ENCODING_GZIP)
 
         async def emit(payload: bytes, end: bool) -> None:
             nonlocal ended

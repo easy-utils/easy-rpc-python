@@ -16,7 +16,7 @@ from google.protobuf.any_pb2 import Any
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
 
-from easyrpc import MethodSpec, RPCError, ErrorDetail, HandlerContext
+from easyrpc import MethodSpec, RPCError, ErrorDetail, HandlerContext, decode_msg, encode_msg
 from easyrpc.server import ServerRegistry, dispatch
 from connectrpc.conformance.v1 import service_pb2 as pb
 from connectrpc.conformance.v1 import server_compat_pb2 as sc
@@ -79,12 +79,12 @@ def build_registry() -> ServerRegistry:
     reg = ServerRegistry()
 
     async def do_unary(req_bytes, ctx):
-        m = pb.UnaryRequest.FromString(req_bytes)
+        m = decode_msg(req_bytes, pb.UnaryRequest, ctx.kind)
         info = _make_request_info(ctx.headers, [_request_any(m, "UnaryRequest")])
         def_ = m.response_definition
         payload = pb.ConformancePayload(request_info=info)
         if def_ is None:
-            return pb.UnaryResponse(payload=payload).SerializeToString()
+            return encode_msg(pb.UnaryResponse(payload=payload), ctx.kind)
         _apply_headers(def_.response_headers, ctx, False)
         _apply_headers(def_.response_trailers, ctx, True)
         if def_.WhichOneof("response") == "error":
@@ -92,12 +92,12 @@ def build_registry() -> ServerRegistry:
         if def_.response_delay_ms:
             await asyncio.sleep(def_.response_delay_ms / 1000.0)
         payload.data = def_.response_data
-        return pb.UnaryResponse(payload=payload).SerializeToString()
+        return encode_msg(pb.UnaryResponse(payload=payload), ctx.kind)
 
     async def do_idempotent(req_bytes, ctx):
-        m = pb.IdempotentUnaryRequest.FromString(req_bytes)
+        m = decode_msg(req_bytes, pb.IdempotentUnaryRequest, ctx.kind)
         info = _make_request_info(ctx.headers, [_request_any(m, "IdempotentUnaryRequest")])
-        return pb.IdempotentUnaryResponse(payload=pb.ConformancePayload(request_info=info)).SerializeToString()
+        return encode_msg(pb.IdempotentUnaryResponse(payload=pb.ConformancePayload(request_info=info)), ctx.kind)
 
     async def do_unimplemented(_req_bytes, _ctx):
         raise RPCError(12, "unimplemented")
@@ -106,7 +106,7 @@ def build_registry() -> ServerRegistry:
         raise RPCError(12, "client streaming is not supported")
 
     async def do_server_stream(req_bytes, ctx, emit):
-        m = pb.ServerStreamRequest.FromString(req_bytes)
+        m = decode_msg(req_bytes, pb.ServerStreamRequest, ctx.kind)
         info = _make_request_info(ctx.headers, [_request_any(m, "ServerStreamRequest")])
         def_ = m.response_definition
         if def_ is None:
@@ -120,7 +120,7 @@ def build_registry() -> ServerRegistry:
             payload = pb.ConformancePayload(data=data)
             if first:
                 payload.request_info.CopyFrom(info)
-            await emit(pb.ServerStreamResponse(payload=payload).SerializeToString(), False)
+            await emit(encode_msg(pb.ServerStreamResponse(payload=payload), ctx.kind), False)
             first = False
         if def_.HasField("error"):
             raise _to_rpc_error(def_.error, info if first else None)
