@@ -370,5 +370,31 @@
     "jsonPayloads": "semantic: end-stream and unary-error bodies are JSON; implementations MUST parse them and compare the decoded values (JSON object key order is NOT significant)",
     "headers": "case-insensitive map equality",
     "codeNames": "value equality"
+  },
+  "contentKinds": {
+    "description": "Content-Type -> message codec + shape mapping (spec \u00a72).",
+    "map": {
+      "application/proto": {
+        "kind": "proto",
+        "stream": false
+      },
+      "application/connect+proto": {
+        "kind": "proto",
+        "stream": true
+      },
+      "application/json": {
+        "kind": "json",
+        "stream": false
+      },
+      "application/connect+json": {
+        "kind": "json",
+        "stream": true
+      }
+    },
+    "reject": [
+      "application/xml",
+      "text/plain",
+      "application/octet-stream"
+    ]
   }
 }
